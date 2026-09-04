@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preserve the exchange prefix from CTP subscriptions and use it when market-data callbacks omit `ExchangeID`.
+
 - Added discovery for nested, flat CTP SDK packages and Linux libraries shipped without the usual `lib` filename prefix.
 - Kept repository-local `ctp_file/` SDK material out of Git and ordinary Docker build contexts.
 - Staged a normalized runtime library with origin-relative linking so SDKs without an ELF SONAME do not embed container-only absolute paths.

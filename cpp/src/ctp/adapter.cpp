@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <mutex>
 #include <stdexcept>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -23,6 +24,11 @@ template <std::size_t N> std::string_view field_view(const char (&field)[N]) noe
   std::size_t size=0;while(size<N&&field[size]!='\0')++size;return {field,size};
 }
 bool response_ok(const CThostFtdcRspInfoField* info) noexcept { return info == nullptr || info->ErrorID == 0; }
+struct TransparentStringHash {
+  using is_transparent = void;
+  std::size_t operator()(std::string_view value) const noexcept { return std::hash<std::string_view>{}(value); }
+  std::size_t operator()(const std::string& value) const noexcept { return (*this)(std::string_view{value}); }
+};
 }
 
 struct MarketDataAdapter::Impl final : CThostFtdcMdSpi {
@@ -31,6 +37,13 @@ struct MarketDataAdapter::Impl final : CThostFtdcMdSpi {
     for (const auto& subscription : config_.subscriptions) {
       const auto dot = subscription.find('.');
       const auto instrument = dot == std::string::npos ? subscription : subscription.substr(dot + 1);
+      const auto exchange = dot == std::string::npos ? std::string{} : subscription.substr(0, dot);
+      if (!instrument.empty() && !exchange.empty()) {
+        const auto [entry, inserted] = exchange_by_instrument_.try_emplace(instrument, exchange);
+        if (!inserted && entry->second != exchange) {
+          throw std::invalid_argument("CTP instrument is configured with conflicting exchanges: " + instrument);
+        }
+      }
       if (!instrument.empty() && desired_set_.insert(instrument).second) desired_.push_back(instrument);
     }
     if (desired_.empty()) throw std::invalid_argument("CTP subscriptions contain no instrument IDs");
@@ -146,9 +159,9 @@ struct MarketDataAdapter::Impl final : CThostFtdcMdSpi {
   }
 #endif
 
-  void OnRspUserLogin(CThostFtdcRspUserLoginField*, CThostFtdcRspInfoField* info, int, bool) override {
+  void OnRspUserLogin(CThostFtdcRspUserLoginField* response, CThostFtdcRspInfoField* info, int, bool) override {
     const auto ok=response_ok(info);if(!ok)++login_failures_;logged_in_.store(ok);if(ok)set_state(State::logged_in);const auto action=machine_.login_result(ok);set_state(machine_.state());
-    if(ok)spdlog::info("ctp_login_succeeded");else spdlog::error("ctp_login_failed error_id={}",info==nullptr?0:info->ErrorID);
+    if(ok)spdlog::info("ctp_login_succeeded trading_day={} login_time={}",response==nullptr?std::string_view{}:field_view(response->TradingDay),response==nullptr?std::string_view{}:field_view(response->LoginTime));else spdlog::error("ctp_login_failed error_id={}",info==nullptr?0:info->ErrorID);
     apply(action);
   }
 
@@ -156,7 +169,8 @@ struct MarketDataAdapter::Impl final : CThostFtdcMdSpi {
     const auto ok=response_ok(info);if(ok){++subscription_successes_;if(instrument!=nullptr)active_.insert(std::string{field_view(instrument->InstrumentID)});}else ++subscription_failures_;
     machine_.subscription_result(ok,last);set_state(machine_.state());if(last)ready_.store(machine_.state()==State::ready);
     if(!ok)spdlog::error("ctp_subscription_failed error_id={}",info==nullptr?0:info->ErrorID);
-    else if(last)spdlog::info("ctp_subscriptions_ready active={} desired={}",active_.size(),desired_.size());
+    else spdlog::info("ctp_subscription_succeeded instrument={} last={}",instrument==nullptr?std::string_view{}:field_view(instrument->InstrumentID),last);
+    if(ok&&last)spdlog::info("ctp_subscriptions_ready active={} desired={}",active_.size(),desired_.size());
   }
 
   void OnRspError(CThostFtdcRspInfoField* info, int, bool) override {
@@ -169,13 +183,15 @@ struct MarketDataAdapter::Impl final : CThostFtdcMdSpi {
     DepthSnapshot snapshot;snapshot.instrument.assign(field_view(raw->InstrumentID));snapshot.exchange.assign(field_view(raw->ExchangeID));snapshot.trading_day.assign(field_view(raw->TradingDay));snapshot.action_day.assign(field_view(raw->ActionDay));snapshot.update_time.assign(field_view(raw->UpdateTime));snapshot.update_millisec=raw->UpdateMillisec;snapshot.last_price=raw->LastPrice;snapshot.volume=raw->Volume;snapshot.turnover=raw->Turnover;snapshot.open_interest=raw->OpenInterest;snapshot.upper_limit_price=raw->UpperLimitPrice;snapshot.lower_limit_price=raw->LowerLimitPrice;
     const double bid_prices[]{raw->BidPrice1,raw->BidPrice2,raw->BidPrice3,raw->BidPrice4,raw->BidPrice5};const int bid_volumes[]{raw->BidVolume1,raw->BidVolume2,raw->BidVolume3,raw->BidVolume4,raw->BidVolume5};const double ask_prices[]{raw->AskPrice1,raw->AskPrice2,raw->AskPrice3,raw->AskPrice4,raw->AskPrice5};const int ask_volumes[]{raw->AskVolume1,raw->AskVolume2,raw->AskVolume3,raw->AskVolume4,raw->AskVolume5};
     for(std::size_t i=0;i<5;++i){snapshot.bid_price[i]=bid_prices[i];snapshot.bid_volume[i]=bid_volumes[i];snapshot.ask_price[i]=ask_prices[i];snapshot.ask_volume[i]=ask_volumes[i];}
-    const auto result=normalize_and_enqueue(snapshot,recv_ns,recv_time,identity_,queue_);if(result==IngressResult::invalid){++invalid_ticks_;return;}if(result==IngressResult::queue_full){++ingress_rejected_;return;}last_tick_ns_.store(recv_ns);
+    const auto exchange=exchange_by_instrument_.find(snapshot.instrument.view());
+    const auto fallback_exchange=exchange==exchange_by_instrument_.end()?std::string_view{}:std::string_view{exchange->second};
+    const auto result=normalize_and_enqueue(snapshot,recv_ns,recv_time,identity_,queue_,fallback_exchange);if(result==IngressResult::invalid){++invalid_ticks_;return;}if(result==IngressResult::queue_full){++ingress_rejected_;return;}last_tick_ns_.store(recv_ns);
   }
 
   int next_request_id() noexcept { return request_id_.fetch_add(1); }
   Metrics metrics() const noexcept {return{connected_,logged_in_,ready_,ticks_received_,invalid_ticks_,ingress_rejected_,disconnects_,reconnects_,login_failures_,subscription_successes_,subscription_failures_,last_tick_ns_};}
 
-  SpscQueue<MarketTick>& queue_;ProducerIdentity& identity_;Config config_;StateMachine machine_;CThostFtdcMdApi* api_{};std::string front_address_;std::vector<std::string> desired_;std::unordered_set<std::string> desired_set_,active_;std::atomic<State> state_{State::disconnected};std::atomic<int> request_id_{1};std::atomic<bool> connected_{false},logged_in_{false},ready_{false},ever_connected_{false};std::atomic<std::uint64_t> ticks_received_{0},invalid_ticks_{0},ingress_rejected_{0},disconnects_{0},reconnects_{0},login_failures_{0},subscription_successes_{0},subscription_failures_{0};std::atomic<std::int64_t> last_tick_ns_{0};
+  SpscQueue<MarketTick>& queue_;ProducerIdentity& identity_;Config config_;StateMachine machine_;CThostFtdcMdApi* api_{};std::string front_address_;std::vector<std::string> desired_;std::unordered_map<std::string,std::string,TransparentStringHash,std::equal_to<>> exchange_by_instrument_;std::unordered_set<std::string> desired_set_,active_;std::atomic<State> state_{State::disconnected};std::atomic<int> request_id_{1};std::atomic<bool> connected_{false},logged_in_{false},ready_{false},ever_connected_{false};std::atomic<std::uint64_t> ticks_received_{0},invalid_ticks_{0},ingress_rejected_{0},disconnects_{0},reconnects_{0},login_failures_{0},subscription_successes_{0},subscription_failures_{0};std::atomic<std::int64_t> last_tick_ns_{0};
 };
 
 MarketDataAdapter::MarketDataAdapter(SpscQueue<MarketTick>& queue,ProducerIdentity& identity,Config config):impl_(std::make_unique<Impl>(queue,identity,std::move(config))){}
