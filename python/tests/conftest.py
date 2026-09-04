@@ -12,3 +12,13 @@ class FakeRepository:
     def __init__(self,ticks=None):self.ticks=ticks or [];self.closed=False
     async def load_latest_quotes(self):return copy.deepcopy(self.ticks)
     async def close(self):self.closed=True
+
+class FakeMetadataRepository:
+    def __init__(self,instruments=None,fail=False):self.instruments=instruments or [];self.fail=fail;self.started=False;self.closed=False;self.calls=[]
+    async def start(self):
+        if self.fail:raise RuntimeError("postgres unavailable")
+        self.started=True
+    async def list_instruments(self,**kwargs):
+        if self.fail:raise RuntimeError("postgres unavailable")
+        self.calls.append(kwargs);return self.instruments
+    async def close(self):self.closed=True

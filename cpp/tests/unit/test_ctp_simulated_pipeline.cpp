@@ -1,0 +1,8 @@
+#include "market_data/ctp/normalizer.hpp"
+#include "market_data/dispatcher.hpp"
+#include <gtest/gtest.h>
+#include <chrono>
+using namespace market_data;
+namespace {ctp::DepthSnapshot fixture(){ctp::DepthSnapshot raw;raw.instrument.assign("zn2610");raw.exchange.assign("SHFE");raw.trading_day.assign("20260904");raw.action_day.assign("20260903");raw.update_time.assign("21:30:00");raw.last_price=100;return raw;}}
+TEST(CtpSimulatedPipeline,NormalizedSnapshotReachesBothExistingPaths){SpscQueue<MarketTick> ingress{4},persistence{4};LiveQueue live{4};Dispatcher dispatcher{ingress,persistence,&live};ProducerIdentity identity;EXPECT_EQ(ctp::normalize_and_enqueue(fixture(),123,std::chrono::system_clock::time_point{std::chrono::seconds{1788442200}},identity,ingress),ctp::IngressResult::accepted);dispatcher.start();dispatcher.request_stop();dispatcher.join();MarketTick stored,streamed;ASSERT_TRUE(persistence.try_pop(stored));ASSERT_TRUE(live.try_pop(streamed));EXPECT_EQ(stored.seq,1);EXPECT_EQ(streamed.seq,1);EXPECT_EQ(stored.instrument.view(),"zn2610");}
+TEST(CtpSimulatedPipeline,InvalidAndQueueFullAreVisibleResults){SpscQueue<MarketTick> ingress{1};ProducerIdentity identity;auto invalid=fixture();invalid.update_time.assign("bad");EXPECT_EQ(ctp::normalize_and_enqueue(invalid,1,std::chrono::system_clock::now(),identity,ingress),ctp::IngressResult::invalid);EXPECT_EQ(ctp::normalize_and_enqueue(fixture(),2,std::chrono::system_clock::now(),identity,ingress),ctp::IngressResult::accepted);EXPECT_EQ(ctp::normalize_and_enqueue(fixture(),3,std::chrono::system_clock::now(),identity,ingress),ctp::IngressResult::queue_full);EXPECT_EQ(ingress.metrics().push_failed_total,1);}

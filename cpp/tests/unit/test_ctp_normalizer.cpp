@@ -1,0 +1,18 @@
+#include "market_data/ctp/normalizer.hpp"
+#include <gtest/gtest.h>
+#include <chrono>
+#include <cfloat>
+#include <cmath>
+
+namespace {
+using namespace market_data;
+using namespace market_data::ctp;
+std::chrono::system_clock::time_point utc(int year,unsigned month,unsigned day,int hour,int minute,int second){using namespace std::chrono;return sys_days{year_month_day{std::chrono::year{year},std::chrono::month{month},std::chrono::day{day}}}+hours{hour}+minutes{minute}+seconds{second};}
+DepthSnapshot snapshot(){DepthSnapshot value;value.instrument.assign("zn2610");value.exchange.assign("SHFE");value.trading_day.assign("20260904");value.action_day.assign("20260903");value.update_time.assign("21:30:01");value.update_millisec=234;value.last_price=123.5;value.volume=456;value.turnover=789.25;value.open_interest=321.5;value.upper_limit_price=150;value.lower_limit_price=100;for(std::size_t i=0;i<5;++i){value.bid_price[i]=123.0-static_cast<double>(i);value.ask_price[i]=124.0+static_cast<double>(i);value.bid_volume[i]=static_cast<int>(10+i);value.ask_volume[i]=static_cast<int>(20+i);}return value;}
+}
+
+TEST(CtpNormalizer,PreservesSnapshotAndAllBookLevels){ProducerId id{"producer"};auto result=normalize(snapshot(),123,utc(2026,9,3,13,30,2),id,7);ASSERT_TRUE(result);EXPECT_EQ(result->producer_id.view(),"producer");EXPECT_EQ(result->seq,7);EXPECT_EQ(result->trading_day.view(),"20260904");EXPECT_EQ(result->action_day.view(),"20260903");EXPECT_EQ(result->volume,456);EXPECT_DOUBLE_EQ(result->turnover,789.25);EXPECT_DOUBLE_EQ(result->open_interest,321.5);for(std::size_t i=0;i<5;++i){EXPECT_DOUBLE_EQ(result->bid_price[i],123.0-static_cast<double>(i));EXPECT_DOUBLE_EQ(result->ask_price[i],124.0+static_cast<double>(i));EXPECT_EQ(result->bid_volume[i],10+static_cast<int>(i));EXPECT_EQ(result->ask_volume[i],20+static_cast<int>(i));}}
+TEST(CtpNormalizer,ConvertsShanghaiEventTimeToUtc){ProducerId id{"p"};auto result=normalize(snapshot(),0,utc(2026,9,3,13,30,2),id,1);ASSERT_TRUE(result);EXPECT_EQ(result->event_ts_us,std::chrono::duration_cast<std::chrono::microseconds>(utc(2026,9,3,13,30,1).time_since_epoch()).count()+234000);}
+TEST(CtpNormalizer,EmptyActionDayUsesNearestDateAcrossMidnight){auto value=snapshot();value.action_day.assign("");value.update_time.assign("23:59:59");ProducerId id{"p"};auto before=normalize(value,0,utc(2026,9,3,16,0,1),id,1);ASSERT_TRUE(before);EXPECT_EQ(before->event_ts_us,std::chrono::duration_cast<std::chrono::microseconds>(utc(2026,9,3,15,59,59).time_since_epoch()).count()+234000);value.update_time.assign("00:00:01");auto after=normalize(value,0,utc(2026,9,3,15,59,59),id,2);ASSERT_TRUE(after);EXPECT_EQ(after->event_ts_us,std::chrono::duration_cast<std::chrono::microseconds>(utc(2026,9,3,16,0,1).time_since_epoch()).count()+234000);}
+TEST(CtpNormalizer,RejectsMalformedRequiredFieldsAndTime){ProducerId id{"p"};auto value=snapshot();value.update_time.assign("25:00:00");EXPECT_FALSE(normalize(value,0,utc(2026,9,3,0,0,0),id,1));value=snapshot();value.trading_day.assign("");EXPECT_FALSE(normalize(value,0,utc(2026,9,3,0,0,0),id,1));}
+TEST(CtpNormalizer,NormalizesSentinelsButPreservesValidZero){ProducerId id{"p"};auto value=snapshot();value.last_price=DBL_MAX;value.bid_price[0]=DBL_MAX;value.ask_price[0]=DBL_MAX;value.bid_price[1]=0;value.ask_price[1]=0;auto result=normalize(value,0,utc(2026,9,3,13,30,2),id,1);ASSERT_TRUE(result);EXPECT_TRUE(std::isnan(result->last_price));EXPECT_TRUE(std::isnan(result->bid_price[0]));EXPECT_TRUE(std::isnan(result->ask_price[0]));EXPECT_DOUBLE_EQ(result->bid_price[1],0);EXPECT_DOUBLE_EQ(result->ask_price[1],0);}

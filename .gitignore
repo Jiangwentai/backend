@@ -2,5 +2,6 @@
 /.cache/
 /.env
 /data/
+/ctp_file/
+/config/app.local.yaml
 *.log
-

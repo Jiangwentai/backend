@@ -1,3 +1,4 @@
+source: synthetic
 queues:
   ingress_capacity: 1048576
   persistence_capacity: 1048576
@@ -12,6 +13,13 @@ questdb:
 synthetic:
   rate: 10000
   symbols: [SHFE.zn2610, DCE.i2601]
+ctp:
+  front_address: "180.168.146.187:10131"
+  broker_id: "9999"
+  user_id: "102873"
+  flow_path: ./data/ctp-flow/
+  authentication_required: false
+  subscriptions: [SHFE.zn2610]
 logging:
   level: info
 live:

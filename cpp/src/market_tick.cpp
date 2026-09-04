@@ -28,7 +28,9 @@ std::chrono::sys_days parse_day(std::string_view d) {
 std::int64_t normalize_ctp_event_ts_us(std::string_view action_day, std::string_view t, int ms, std::chrono::system_clock::time_point recv) {
   using namespace std::chrono;
   if (t.size()!=8 || t[2]!=':' || t[5]!=':' || ms<0 || ms>999) throw std::invalid_argument("invalid update time");
-  const auto tod = hours{parse_int(t.substr(0,2))}+minutes{parse_int(t.substr(3,2))}+seconds{parse_int(t.substr(6,2))}+milliseconds{ms};
+  const auto hour=parse_int(t.substr(0,2)),minute=parse_int(t.substr(3,2)),second=parse_int(t.substr(6,2));
+  if(hour<0||hour>23||minute<0||minute>59||second<0||second>59)throw std::invalid_argument("invalid update time");
+  const auto tod = hours{hour}+minutes{minute}+seconds{second}+milliseconds{ms};
   constexpr auto china_offset = hours{8};
   const auto local_recv = recv + china_offset;
   sys_days base = action_day.empty() ? floor<days>(local_recv) : parse_day(action_day);

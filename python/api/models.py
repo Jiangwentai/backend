@@ -69,3 +69,31 @@ class HealthResponse(BaseModel):
     components:dict[str,Literal["HEALTHY","DEGRADED","UNHEALTHY"]]
     websocket_clients:int
     last_live_message_time:str|None
+
+class InstrumentResponse(BaseModel):
+    symbol:str
+    exchange:str
+    instrument:str
+    product:str
+    product_name:str
+    delivery_month:str|None
+    listed_date:str|None
+    last_trading_date:str|None
+    status:Literal["prelisted","active","expired","suspended"]
+    contract_multiplier:float|None
+    price_tick:float|None
+    currency:str
+
+class BarResponse(BaseModel):
+    exchange:str
+    instrument:str
+    trading_day:str
+    interval:Literal["1m","5m","1h","1d"]
+    bar_start:datetime
+    open:float
+    high:float
+    low:float
+    close:float
+    volume:int
+    open_interest:float|None
+    snapshot_count:int

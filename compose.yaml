@@ -46,12 +46,53 @@ services:
       QDB_HTTP_URL: http://questdb:9000
       WEBSOCKET_QUEUE_CAPACITY: ${WEBSOCKET_QUEUE_CAPACITY:-128}
       LIVE_STALE_AFTER_SECONDS: ${LIVE_STALE_AFTER_SECONDS:-5}
+      POSTGRES_DSN: postgresql://${POSTGRES_USER:-market_data}:${POSTGRES_PASSWORD:-dev-only-password}@postgres:5432/${POSTGRES_DB:-market_data}
+      ARCHIVE_ROOT: /archive
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports: ["${API_PORT:-8000}:8000"]
+    volumes:
+      - archive-data:/archive:ro
     depends_on:
       questdb-init:
         condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+  archive:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    profiles: ["tools"]
+    entrypoint: ["python", "-m", "archive.cli"]
+    environment:
+      QDB_HTTP_URL: http://questdb:9000
+      ARCHIVE_ROOT: /archive
+    volumes:
+      - archive-data:/archive
+    depends_on:
+      questdb-init:
+        condition: service_completed_successfully
+  research:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    profiles: ["tools"]
+    entrypoint: ["python", "-m", "research.cli"]
+    environment:
+      ARCHIVE_ROOT: /archive
+    volumes:
+      - archive-data:/archive:ro
+  quality:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    profiles: ["tools"]
+    entrypoint: ["python", "-m", "quality.cli"]
+    environment:
+      ARCHIVE_ROOT: /archive
+    volumes:
+      - archive-data:/archive:ro
 volumes:
   questdb-data:
   postgres-data:
+  archive-data:
