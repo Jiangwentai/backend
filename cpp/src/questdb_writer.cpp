@@ -12,6 +12,10 @@ void add_price(q::line_sender_buffer&b,q::column_name_view n,double v){b.column(
 void append(q::line_sender_buffer&b,const MarketTick&t){
  using namespace q::literals;
  b.table("ctp_market_data"_tn)
+  .symbol("provider"_cn,uv(to_string(t.provider)))
+  .symbol("event_type"_cn,uv(to_string(t.event_type)))
+  .symbol("instrument_id"_cn,uv(t.instrument_id.view()))
+  .symbol("quality"_cn,uv(to_string(t.quality)))
   .symbol("producer_id"_cn,uv(t.producer_id.view()))
   .symbol("exchange"_cn,uv(t.exchange.view()))
   .symbol("instrument"_cn,uv(t.instrument.view()))

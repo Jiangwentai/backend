@@ -26,7 +26,11 @@ class BookLevel(BaseModel):
     volume:int
 
 class QuoteResponse(BaseModel):
-    schema_version:int=1
+    schema_version:int=2
+    provider:str
+    event_type:str
+    instrument_id:str
+    quality:str
     symbol:str
     exchange:str
     instrument:str
@@ -49,7 +53,7 @@ def quote_from_tick(tick:dict)->QuoteResponse:
     def price(value:float|None)->float|None:return value if value is not None and math.isfinite(value) else None
     bids=[BookLevel(price=p,volume=v) for p,v in zip(tick["bid_price"],tick["bid_volume"]) if price(p) is not None]
     asks=[BookLevel(price=p,volume=v) for p,v in zip(tick["ask_price"],tick["ask_volume"]) if price(p) is not None]
-    return QuoteResponse(symbol=f'{tick["exchange"]}.{tick["instrument"]}',exchange=tick["exchange"],instrument=tick["instrument"],event_ts=_timestamp(tick["event_ts"],1_000_000),recv_ts=_timestamp(tick["recv_ts"],1_000_000_000),producer_id=tick["producer_id"],seq=tick["seq"],trading_day=_day(tick["trading_day"]),action_day=_day(tick["action_day"]),last_price=price(tick["last_price"]),volume=tick["volume"],turnover=tick["turnover"],open_interest=tick["open_interest"],upper_limit_price=price(tick["upper_limit_price"]),lower_limit_price=price(tick["lower_limit_price"]),bid=bids,ask=asks)
+    return QuoteResponse(provider=tick.get("provider","ctp"),event_type=tick.get("event_type","quote_snapshot"),instrument_id=tick.get("instrument_id",f'{tick["exchange"]}.{tick["instrument"]}'),quality=tick.get("quality","UNKNOWN"),symbol=f'{tick["exchange"]}.{tick["instrument"]}',exchange=tick["exchange"],instrument=tick["instrument"],event_ts=_timestamp(tick["event_ts"],1_000_000),recv_ts=_timestamp(tick["recv_ts"],1_000_000_000),producer_id=tick["producer_id"],seq=tick["seq"],trading_day=_day(tick["trading_day"]),action_day=_day(tick["action_day"]),last_price=price(tick["last_price"]),volume=tick["volume"],turnover=tick["turnover"],open_interest=tick["open_interest"],upper_limit_price=price(tick["upper_limit_price"]),lower_limit_price=price(tick["lower_limit_price"]),bid=bids,ask=asks)
 
 class SubscriptionRequest(BaseModel):
     protocol_version:Literal[1]
@@ -69,6 +73,7 @@ class HealthResponse(BaseModel):
     components:dict[str,Literal["HEALTHY","DEGRADED","UNHEALTHY"]]
     websocket_clients:int
     last_live_message_time:str|None
+    providers:dict[str,Literal["STOPPED","STARTING","CONNECTING","AUTHENTICATING","READY","DEGRADED","RECONNECTING","ERROR","STOPPING"]]=Field(default_factory=dict)
 
 class InstrumentResponse(BaseModel):
     symbol:str

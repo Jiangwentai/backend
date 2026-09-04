@@ -68,4 +68,7 @@ def render_metrics(app) -> str:
     }
     for component, healthy in states.items():
         output.append(_metric("market_data_component_healthy", int(healthy is True), f'{{component="{component}"}}'))
+    output.append("# TYPE market_data_provider_events_received_total counter\n")
+    for provider,count in sorted(subscriber.provider_received_total.items()):
+        output.append(_metric("market_data_provider_events_received_total",count,f'{{provider="{provider}"}}'))
     return "".join(output)

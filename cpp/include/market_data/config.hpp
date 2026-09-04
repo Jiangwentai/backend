@@ -7,6 +7,9 @@
 namespace market_data {
 struct AppConfig {
   std::string source{"synthetic"};
+  bool providers_explicit{false};
+  bool synthetic_enabled{true};
+  bool ctp_enabled{false};
   std::size_t ingress_capacity{1'048'576};
   std::size_t persistence_capacity{1'048'576};
   std::size_t live_capacity{65'536};

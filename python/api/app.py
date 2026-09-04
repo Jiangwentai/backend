@@ -69,7 +69,7 @@ def create_app(*,settings:Settings|None=None,repository:Any|None=None,metadata_r
     @app.get("/health",response_model=HealthResponse)
     async def health():
         sub=app.state.subscriber;metrics=app.state.websocket_manager.metrics
-        return calculate_health(ready=app.state.ready,zeromq_healthy=sub.healthy if start_subscriber else True,last_message_monotonic=sub.last_message_monotonic,questdb_healthy=app.state.questdb_healthy,postgres_healthy=app.state.postgres_healthy,websocket_clients=metrics.websocket_clients,stale_after=config.live_stale_after_seconds)
+        return calculate_health(ready=app.state.ready,zeromq_healthy=sub.healthy if start_subscriber else True,last_message_monotonic=sub.last_message_monotonic,questdb_healthy=app.state.questdb_healthy,postgres_healthy=app.state.postgres_healthy,websocket_clients=metrics.websocket_clients,stale_after=config.live_stale_after_seconds,providers=await app.state.cache.provider_states())
 
     @app.get("/v1/instruments",response_model=list[InstrumentResponse])
     async def instruments(exchange:str|None=Query(None,pattern=r"^[A-Z][A-Z0-9_]{1,15}$"),product:str|None=Query(None,pattern=r"^[A-Za-z0-9_-]{1,16}$"),active_only:bool=True,limit:int=Query(500,ge=1,le=2000),offset:int=Query(0,ge=0)):
@@ -79,10 +79,10 @@ def create_app(*,settings:Settings|None=None,repository:Any|None=None,metadata_r
             app.state.postgres_healthy=False;raise HTTPException(503,"metadata database unavailable") from exc
 
     @app.get("/v1/quotes/{symbol}",response_model=QuoteResponse)
-    async def quote(symbol:str):
+    async def quote(symbol:str,provider:str|None=Query(None,pattern=r"^(ctp|synthetic|ibkr|akshare)$")):
         try:validate_symbol(symbol)
         except ValueError as exc:raise HTTPException(422,str(exc)) from exc
-        exchange,instrument=symbol.split(".",1);tick=await app.state.cache.lookup(exchange,instrument)
+        exchange,instrument=symbol.split(".",1);tick=await app.state.cache.lookup(exchange,instrument,provider)
         if tick is None:raise HTTPException(404,"quote not found")
         return quote_from_tick(tick)
 

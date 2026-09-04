@@ -69,7 +69,7 @@ class WebSocketManager:
         symbol=f'{tick["exchange"]}.{tick["instrument"]}'
         # Keep coalescing cheap. API serialization happens only for the value
         # that the independent sender task actually transmits.
-        dropped=await client.buffer.put(symbol,tick)
+        dropped=await client.buffer.put(f'{tick.get("provider","ctp")}:{symbol}',tick)
         if dropped:self.metrics.websocket_dropped_updates_total+=1;self.metrics.websocket_slow_clients_total+=1
     async def publish(self,tick:dict):
         symbol=f'{tick["exchange"]}.{tick["instrument"]}'
@@ -86,7 +86,7 @@ class WebSocketManager:
         try:
             while True:
                 tick=await client.buffer.get();quote=quote_from_tick(tick).model_dump()
-                message={"type":"quote","schema_version":1,"symbol":quote["symbol"],"data":quote}
+                message={"type":"quote","schema_version":2,"symbol":quote["symbol"],"provider":quote["provider"],"data":quote}
                 async with client.send_lock:await client.websocket.send_json(message)
                 self.metrics.websocket_messages_sent_total+=1
         except asyncio.CancelledError:raise

@@ -1,11 +1,11 @@
-# Financial Market Data Backend — Phase 0–8
+# Financial Market Data Backend — Phase 0–9
 
 C++20 persistence pipeline for provider-independent market snapshots. The implemented path is:
 
-`SyntheticGenerator | CTP MdApi -> bounded ingress SPSC queue -> Dispatcher`, followed by two independent paths:
+`Synthetic Provider | CTP Provider -> provider-local bounded SPSC queues -> fan-in Dispatcher`, followed by two independent paths:
 
 - Persistence: `bounded persistence SPSC queue -> dedicated QuestDB QWP writer -> disk Store-and-Forward -> QuestDB WAL/DEDUP`.
-- Live IPC: `bounded freshness-first LiveQueue -> dedicated ZeroMQ PUB -> multipart(topic, MessagePack v1) -> async Python SUB -> LatestQuoteCache`.
+- Live IPC: `bounded freshness-first LiveQueue -> dedicated ZeroMQ PUB -> multipart(topic, MessagePack v2) -> async Python SUB -> provider-aware LatestQuoteCache`.
 - Web API: `LatestQuoteCache -> FastAPI REST + subscription-based WebSocket manager`.
 - Metadata: `FastAPI -> asyncpg pool -> PostgreSQL exchanges/products/contracts/calendars/sessions/roll metadata`.
 - Archive: `QuestDB closed logical partition -> paged reader -> Arrow schema -> immutable ZSTD Parquet + verification manifest`.
@@ -29,11 +29,13 @@ docker compose up -d questdb postgres
 docker compose run --rm questdb-init
 ```
 
-PostgreSQL applies `sql/postgresql/001_bootstrap.sql` and `002_reference_metadata.sql` automatically only when creating a new data volume. For an existing volume, apply the Phase 5 migration explicitly:
+PostgreSQL migrations are applied automatically only when creating a new data volume. For an existing volume, apply the Phase 5 and Phase 9 migrations explicitly:
 
 ```sh
 docker compose exec -T postgres psql -U market_data -d market_data -v ON_ERROR_STOP=1 \
   < sql/postgresql/002_reference_metadata.sql
+docker compose exec -T postgres psql -U market_data -d market_data -v ON_ERROR_STOP=1 \
+  < sql/postgresql/003_providers.sql
 ```
 
 If the default host ports are occupied, override `QDB_HTTP_PORT`, `QDB_PG_PORT`, `QDB_METRICS_PORT`, or `POSTGRES_PORT`; service-to-service ports remain unchanged.
@@ -75,11 +77,25 @@ docker run --rm --network backend_default \
 - Queue overflow never overwrites unread raw data. Ingress producers retry; persistence saturation marks the dispatcher degraded and emits CRITICAL logs.
 - Live congestion never blocks persistence: its bounded queue evicts the oldest live item and records drops, preserving the freshest quotes.
 - One process UUID plus a global monotonic sequence identifies every received event. Retries never create a new identity.
-- Identical `(event_ts, producer_id, seq)` transport replays collapse through QuestDB DEDUP. Identical feed payloads with different `seq` remain distinct.
+- Identical `(event_ts, provider, producer_id, seq)` transport replays collapse through QuestDB DEDUP. Identical feed payloads with different `seq`, or events from another provider, remain distinct.
 - QWP `flush()` records local Store-and-Forward acceptance. Shutdown separately waits for the server `ok` ACK.
 - `drain_orphans=on` lets a new process recover prior process slots even though its new producer UUID selects a new active slot; replayed payload identities remain unchanged.
 - `event_ts`, `action_day`, and `trading_day` stay separate. Empty CTP `ActionDay` normalization chooses the nearest local date across midnight and converts UTC+8 to UTC.
-- Live frames use topic `<exchange>.<instrument>` plus a MessagePack map with `schema_version=1`. Python rejects unsupported versions and applies sequence-aware latest-value replacement per instrument.
+- Live frames retain topic `<exchange>.<instrument>` and use MessagePack `schema_version=2` with `provider`, `event_type`, `instrument_id`, and `quality`. Decoders accept legacy v1 frames as CTP quote snapshots. Cache/coalescing identity includes provider.
+
+## Phase 9 provider architecture
+
+Provider-specific APIs terminate at adapters implementing the realtime provider interface and publish canonical events through an event sink. `ProviderManager` owns independent lifecycle and health. Each realtime provider has its own SPSC ingress queue; the single Dispatcher round-robins those queues into the unchanged persistence and freshness-first live paths. This avoids locks in CTP callbacks while allowing Synthetic and CTP to run concurrently.
+
+Legacy `source: synthetic|ctp` remains supported. New configuration can enable providers independently:
+
+```yaml
+providers:
+  synthetic: {enabled: false}
+  ctp: {enabled: true}
+```
+
+The canonical model distinguishes quote snapshots, trades, bid/ask ticks, depth updates, and provider-supplied bars. Phase 9 persists and distributes quote snapshots only; IBKR and AKShare connectivity are intentionally not implemented. See [provider architecture](docs/providers.md) and [data model](docs/data-model.md).
 
 Configuration defaults live in `config/app.yaml`; environment variables override deployment-sensitive fields. Never commit `.env`.
 

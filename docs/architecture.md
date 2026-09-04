@@ -1,17 +1,18 @@
-# Architecture through Phase 8
+# Architecture through Phase 9
 
 The C++ process owns ingestion, dispatch, QuestDB QWP persistence, and ZeroMQ publication. The Python process owns one ZeroMQ SUB socket, the process-local latest-quote cache, REST routes, and WebSocket connections. No WebSocket or REST operation runs on the persistence path.
 
 ```text
-Synthetic or CTP MdApi -> Ingress -> Dispatcher -> PersistenceQueue -> QWP/SF -> QuestDB
-                                `----> LiveQueue -> ZMQ PUB -> ZMQ SUB
-                                                               |
-                                                       LatestQuoteCache
-                                                          /          \
-                                                       REST       WS Manager
+Synthetic Provider -> provider SPSC --.
+                                      +-> Dispatcher -> PersistenceQueue -> QWP/SF -> QuestDB
+CTP Provider ------> provider SPSC --'       `-------> LiveQueue -> ZMQ PUB -> ZMQ SUB
+                                                                          |
+                                                              Provider-aware cache
+                                                                   /          \
+                                                                REST       WS Manager
 ```
 
-The selected input is mutually exclusive. One synthetic generator thread or one MdApi callback stream is the sole producer of the ingress SPSC queue. For CTP, `OnRtnDepthMarketData` captures receive time, copies fixed-size fields into the provider-neutral snapshot representation, normalizes it, assigns the process identity and global sequence, attempts one non-blocking enqueue, and returns. It performs no database, network, filesystem, sleep, blocking-lock, or heavy logging work.
+Synthetic and CTP may be enabled concurrently. Each provider owns its producer identity and SPSC ingress queue; the Dispatcher is the sole consumer and performs round-robin fan-in. For CTP, `OnRtnDepthMarketData` captures receive time, copies fixed-size fields into the canonical snapshot, normalizes it, assigns identity and sequence, attempts one non-blocking enqueue, and returns. It performs no database, network, filesystem, sleep, blocking-lock, or heavy logging work.
 
 The CTP adapter is the only translation unit that includes proprietary SDK headers. Desired subscriptions survive disconnects; active subscriptions are cleared on disconnect and rebuilt after reconnect, optional authentication, and login. Shutdown unregisters/releases MdApi first, then drains ingress and persistence, waits for the QuestDB ACK, and allows the live publisher to drain.
 
@@ -34,5 +35,9 @@ The historical bars REST route dispatches synchronous DuckDB work to a worker th
 Phase 8 exposes the existing bounded-plane counters without joining their ownership domains. The collector provides an atomic metrics snapshot and structured lifecycle summary; FastAPI provides Prometheus text and health endpoints; QuestDB retains its native metrics endpoint. The API metrics endpoint observes Python/IPC behavior only and does not pretend to own collector or database-process metrics.
 
 Archive quality checks run offline against verified, immutable partitions. Integrity failures produce a non-zero exit code suitable for CI or scheduled operations. Warning checks remain advisory and never rewrite, deduplicate, or delete raw snapshots.
+
+Phase 9 introduces the provider boundary. Realtime adapters implement a common lifecycle and event sink; historical and reference capabilities remain segregated. `ProviderManager` owns startup rollback, reverse shutdown, subscription routing, capabilities, and health. The canonical model adds provider, event type, canonical instrument, and quality metadata and reserves quote, trade, bid/ask, depth, and bar variants. Current shared sinks support quote snapshots only.
+
+QuestDB DEDUP identity is now `(event_ts, provider, producer_id, seq)`. MessagePack writers emit schema v2 while readers accept v1; API cache and WebSocket coalescing distinguish providers. PostgreSQL records provider registrations and provider-symbol mappings. New Parquet files use schema v2 while DuckDB reads old schema-v1 archives with defaults. IBKR, AKShare, automatic failover, and arbitration are deliberately deferred.
 
 V1 must run exactly one Uvicorn worker because cache, subscriptions, and metrics are process-local. Multi-worker synchronization is intentionally deferred; no Redis or broker is introduced.

@@ -1,6 +1,6 @@
 # Project task status
 
-Last updated: 2026-09-04
+Last updated: 2026-09-05
 
 ## Completed
 
@@ -36,6 +36,7 @@ Before continuing, review these preliminary files critically. They may be revise
 - Phase 6: Parquet archive — implemented with paged QuestDB reads, immutable ZSTD Parquet partitions, atomic completion manifests, verification, CLI, and tests. QuestDB retention remains an explicit operator action after complete physical-day verification.
 - Phase 7: DuckDB research and derived data — implemented with completed-partition tick scans, 1m/5m/1h/1d OHLCV bars, cumulative-volume differencing, trading-day-aware daily aggregation, explicit continuous mappings, CLI, REST helper, and tests.
 - Phase 8: monitoring and quality — implemented with unified collector snapshots, structured shutdown metrics, Prometheus-compatible API metrics, component health, immutable archive audits, CI exit codes, operational alert guidance, and tests.
+- Phase 9: multi-provider architecture — implemented with canonical provider/event identity, segregated provider interfaces, ProviderManager, provider-local SPSC fan-in, migrated Synthetic/CTP providers, provider-aware QuestDB/live/API/archive/research/quality paths, additive database migrations, regression tests, and benchmark verification.
 
 Do not start these while Phase 4 is active.
 

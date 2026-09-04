@@ -1,0 +1,24 @@
+#include "market_data/dispatcher.hpp"
+#include "market_data/event_sink.hpp"
+#include "market_data/instrument_mapping.hpp"
+#include "market_data/provider_manager.hpp"
+#include "market_data/synthetic_generator.hpp"
+#include <gtest/gtest.h>
+#include <atomic>
+#include <set>
+#include <thread>
+
+namespace {
+using namespace market_data;
+class FakeProvider final:public IRealtimeMarketDataProvider{
+ public:explicit FakeProvider(ProviderId value):id_(value){}ProviderId id()const noexcept override{return id_;}ProviderCapabilities capabilities()const noexcept override{return{true,false,false,false,false,false};}void start()override{running_=true;}void stop()override{running_=false;}void subscribe(const std::vector<Subscription>& value)override{subscriptions_=value;}void unsubscribe(const std::vector<Subscription>&)override{subscriptions_.clear();}ProviderHealth health()const override{return{id_,running_?ProviderState::ready:ProviderState::stopped,running_,running_,0,0,{}};}ProviderId id_;bool running_{};std::vector<Subscription>subscriptions_;
+};
+}
+
+TEST(ProviderArchitecture,StrongIdentityCapabilitiesHealthAndSubscription){EXPECT_EQ(to_string(ProviderId::ctp),"ctp");ASSERT_TRUE(provider_id_from_string("ibkr"));ProviderCapabilities capabilities{true,true,true,true,true,true};EXPECT_TRUE(capabilities.reference_data);ProviderHealth health{ProviderId::ctp,ProviderState::ready,true,true,1,2,{}};EXPECT_EQ(to_string(health.state),"READY");Subscription subscription{"SHFE.zn2610",MarketDataKind::depth,5};EXPECT_EQ(subscription.depth_levels,5);}
+TEST(ProviderArchitecture,CanonicalEventTypesHaveHeaders){EventHeader header{ProviderId::ibkr,ProducerId{"p"},7,10,11,InstrumentId{"US.AAPL"}};MarketEvent trade=TradeTick{header,100.0,2};EXPECT_EQ(event_header(trade).provider,ProviderId::ibkr);EXPECT_TRUE(std::holds_alternative<TradeTick>(trade));MarketEvent quote=QuoteSnapshot{};EXPECT_TRUE(std::holds_alternative<QuoteSnapshot>(quote));}
+TEST(ProviderArchitecture,InstrumentMappingKeepsCanonicalAndNativeIdentity){InstrumentMapping mappings;mappings.add({ProviderId::ctp,"SHFE.zn2610","zn2610","zn2610","SHFE"});const auto* value=mappings.by_provider_symbol(ProviderId::ctp,"zn2610");ASSERT_NE(value,nullptr);EXPECT_EQ(value->instrument_id,"SHFE.zn2610");EXPECT_EQ(mappings.by_provider_symbol(ProviderId::ibkr,"zn2610"),nullptr);}
+TEST(ProviderArchitecture,ManagerOwnsIndependentLifecycle){ProviderManager manager;auto ctp=std::make_unique<FakeProvider>(ProviderId::ctp);auto* ctp_ptr=ctp.get();manager.add(std::move(ctp));manager.add(std::make_unique<FakeProvider>(ProviderId::synthetic));manager.start_all();EXPECT_EQ(manager.size(),2);EXPECT_TRUE(ctp_ptr->health().ready);manager.subscribe(ProviderId::ctp,{{"SHFE.zn2610",MarketDataKind::quote,1}});EXPECT_EQ(ctp_ptr->subscriptions_.size(),1);manager.stop_all();EXPECT_FALSE(ctp_ptr->health().connected);}
+TEST(ProviderArchitecture,EventSinkRejectsUnsupportedEventVisibly){SpscQueue<MarketTick> queue{2};QueueMarketEventSink sink{queue};MarketEvent unsupported=TradeTick{};EXPECT_FALSE(sink.publish(std::move(unsupported)));EXPECT_EQ(sink.unsupported_total(),1);MarketTick quote;quote.provider=ProviderId::ctp;EXPECT_TRUE(sink.publish(MarketEvent{quote}));}
+TEST(ProviderArchitecture,IndependentSpscIngressFansInWithoutCollisionOrLoss){constexpr std::uint64_t count=1000;SpscQueue<MarketTick>a{2048},b{2048},persistence{4096};LiveQueue live{4096};Dispatcher dispatcher{persistence,&live};dispatcher.add_ingress(a);dispatcher.add_ingress(b);dispatcher.start();auto emit=[&](SpscQueue<MarketTick>&queue,ProviderId provider,std::string_view producer){for(std::uint64_t seq=1;seq<=count;++seq){MarketTick tick;tick.provider=provider;tick.producer_id.assign(producer);tick.seq=seq;tick.event_ts_us=42;while(!queue.try_push(tick))std::this_thread::yield();}};std::thread first{emit,std::ref(a),ProviderId::synthetic,"A"},second{emit,std::ref(b),ProviderId::ctp,"B"};first.join();second.join();while(!a.empty()||!b.empty())std::this_thread::yield();dispatcher.request_stop();dispatcher.join();std::set<std::tuple<ProviderId,std::string,std::uint64_t>>identities;MarketTick value;while(persistence.try_pop(value))identities.emplace(value.provider,std::string{value.producer_id.view()},value.seq);EXPECT_EQ(identities.size(),count*2);EXPECT_EQ(live.metrics().push_total,count*2);}
+TEST(ProviderArchitecture,SyntheticUsesProviderLifecycleAndCanonicalIdentity){SpscQueue<MarketTick>queue{32};ProducerIdentity identity;SyntheticGenerator provider{queue,identity,100,{"SHFE.zn2610"}};EXPECT_EQ(provider.id(),ProviderId::synthetic);provider.start();while(queue.empty())std::this_thread::yield();provider.stop();MarketTick tick;ASSERT_TRUE(queue.try_pop(tick));EXPECT_EQ(tick.provider,ProviderId::synthetic);EXPECT_EQ(tick.event_type,MarketEventType::quote_snapshot);EXPECT_EQ(tick.instrument_id.view(),"SHFE.zn2610");EXPECT_EQ(provider.health().state,ProviderState::stopped);}

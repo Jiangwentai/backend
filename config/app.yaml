@@ -1,4 +1,14 @@
 source: synthetic
+providers:
+  synthetic:
+    enabled: true
+  ctp:
+    enabled: false
+  # Reserved for later phases; no connector/runtime dependency is loaded today.
+  ibkr:
+    enabled: false
+  akshare:
+    enabled: false
 queues:
   ingress_capacity: 1048576
   persistence_capacity: 1048576

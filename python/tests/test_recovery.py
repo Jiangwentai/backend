@@ -21,4 +21,4 @@ async def test_latest_query_and_row_mapping():
     client=httpx.AsyncClient(base_url="http://test",transport=httpx.MockTransport(handler));repo=QuestDBQuoteRepository("http://test",client=client)
     result=await repo.load_latest_quotes();await repo.close()
     assert result[0]["seq"]==tick["seq"] and len(result[0]["bid_price"])==5
-    assert "LATEST ON event_ts PARTITION BY exchange, instrument" in LATEST_QUOTES_SQL
+    assert "LATEST ON event_ts PARTITION BY provider, exchange, instrument" in LATEST_QUOTES_SQL

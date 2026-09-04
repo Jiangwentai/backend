@@ -16,12 +16,14 @@ def partition_path(root:Path,exchange:str,instrument:str,trading_day:str)->Path:
     day=f"{trading_day[:4]}-{trading_day[4:6]}-{trading_day[6:]}"
     return root/"ctp"/f"exchange={exchange}"/f"instrument={instrument}"/f"trading_day={day}"
 
-def _summary(table:pa.Table)->dict:
+def _summary(table:pa.Table,schema_version:int=2)->dict:
     events=table.column("event_ts");instruments=sorted(set(table.column("instrument").to_pylist()))
-    return {"schema_version":1,"row_count":table.num_rows,"min_event_ts":None if not table.num_rows else events[0].as_py().isoformat(),"max_event_ts":None if not table.num_rows else events[-1].as_py().isoformat(),"instruments":instruments}
+    result={"schema_version":schema_version,"row_count":table.num_rows,"min_event_ts":None if not table.num_rows else events[0].as_py().isoformat(),"max_event_ts":None if not table.num_rows else events[-1].as_py().isoformat(),"instruments":instruments}
+    if schema_version>=2:result["providers"]=sorted(set(value or "ctp" for value in table.column("provider").to_pylist()))
+    return result
 
 def verify_archive(path:Path)->dict:
-    manifest=json.loads((path/"_SUCCESS.json").read_text());parquet_file=pq.ParquetFile(path/"part-0000.parquet");table=parquet_file.read(columns=["event_ts","instrument"]);actual=_summary(table)
+    manifest=json.loads((path/"_SUCCESS.json").read_text());parquet_file=pq.ParquetFile(path/"part-0000.parquet");version=manifest["verification"].get("schema_version",1);columns=["event_ts","instrument"]+(["provider"] if version>=2 else []);table=parquet_file.read(columns=columns);actual=_summary(table,version)
     if actual!=manifest["verification"]:raise RuntimeError("Parquet verification mismatch")
     if parquet_file.metadata.row_group(0).column(0).compression!="ZSTD":raise RuntimeError("archive is not ZSTD compressed")
     return manifest
@@ -34,14 +36,17 @@ def archive_partition(source,root:Path,exchange:str,instrument:str,trading_day:s
     destination.mkdir(parents=True,exist_ok=True)
     parquet_tmp=destination/"part-0000.parquet.tmp";parquet=destination/"part-0000.parquet";manifest_tmp=destination/"_SUCCESS.json.tmp"
     try:
-        writer=pq.ParquetWriter(parquet_tmp,MARKET_DATA_SCHEMA,compression="zstd",use_dictionary=["producer_id","exchange","instrument","trading_day","action_day"]);row_count=0;min_event=None;max_event=None;instruments=set()
+        writer=pq.ParquetWriter(parquet_tmp,MARKET_DATA_SCHEMA,compression="zstd",use_dictionary=["provider","event_type","instrument_id","quality","producer_id","exchange","instrument","trading_day","action_day"]);row_count=0;min_event=None;max_event=None;instruments=set();providers=set()
         try:
             for rows in batches:
                 if not rows:continue
-                table=pa.Table.from_pylist([{name:row.get(name) for name in COLUMN_NAMES} for row in rows],schema=MARKET_DATA_SCHEMA);writer.write_table(table);row_count+=table.num_rows;events=table.column("event_ts");min_event=min_event or events[0].as_py();max_event=events[-1].as_py();instruments.update(table.column("instrument").to_pylist())
+                normalized=[]
+                for row in rows:
+                    value={name:row.get(name) for name in COLUMN_NAMES};value["provider"]=value["provider"] or "ctp";value["event_type"]=value["event_type"] or "quote_snapshot";value["instrument_id"]=value["instrument_id"] or f'{value["exchange"]}.{value["instrument"]}';value["quality"]=value["quality"] or "UNKNOWN";normalized.append(value)
+                table=pa.Table.from_pylist(normalized,schema=MARKET_DATA_SCHEMA);writer.write_table(table);row_count+=table.num_rows;events=table.column("event_ts");min_event=min_event or events[0].as_py();max_event=events[-1].as_py();instruments.update(table.column("instrument").to_pylist());providers.update(table.column("provider").to_pylist())
         finally:writer.close()
         if not row_count:raise ValueError("source partition is empty")
-        os.replace(parquet_tmp,parquet);verification={"schema_version":1,"row_count":row_count,"min_event_ts":min_event.isoformat(),"max_event_ts":max_event.isoformat(),"instruments":sorted(instruments)};manifest={"partition":{"exchange":exchange,"instrument":instrument,"trading_day":trading_day},"verification":verification,"created_at":datetime.now(timezone.utc).isoformat(),"format":"parquet","compression":"zstd"}
+        os.replace(parquet_tmp,parquet);verification={"schema_version":2,"row_count":row_count,"min_event_ts":min_event.isoformat(),"max_event_ts":max_event.isoformat(),"instruments":sorted(instruments),"providers":sorted(providers)};manifest={"partition":{"exchange":exchange,"instrument":instrument,"trading_day":trading_day},"verification":verification,"created_at":datetime.now(timezone.utc).isoformat(),"format":"parquet","compression":"zstd"}
         manifest_tmp.write_text(json.dumps(manifest,sort_keys=True,indent=2)+"\n");os.replace(manifest_tmp,success);verify_archive(destination)
         return ArchiveResult(destination,row_count,True)
     except Exception:

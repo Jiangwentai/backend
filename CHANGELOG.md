@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Phase 09 introduced strong provider identity, capability/health models, canonical event headers and explicit quote/trade/bid-ask/depth/bar semantics.
+- Migrated Synthetic and CTP behind a common realtime-provider lifecycle, event sink, canonical subscriptions, instrument mapping, and `ProviderManager`.
+- Added one SPSC ingress queue per realtime provider with round-robin fan-in, preserving callback non-blocking behavior and downstream persistence/live isolation.
+- Added provider/event/instrument/quality columns and provider-aware DEDUP through additive QuestDB migrations; added PostgreSQL provider registry and instrument mappings.
+- Advanced MessagePack live frames to schema v2 while retaining v1 decode compatibility; FastAPI responses, cache, WebSocket payloads, health, and metrics now expose provider context.
+- Advanced new Parquet partitions to schema v2 and made DuckDB/quality paths provider-aware while retaining old archive reads and the existing `ctp/` partition layout.
+- Phase 09 benchmark: queue throughput changed from 5.249M to 5.219M events/s (-0.6%); the 10k/s combined run persisted and published 30,001/30,001 with zero drops or failures.
+- Compatibility: legacy `source`, quote fields, table name, archive paths, and WebSocket subscription protocol remain; operators must apply the additive Phase 09 database migrations before deploying the new writer/API.
+- Known limitation: Phase 09 defines non-quote event types and provider boundaries but the current persistence/live implementation accepts quote snapshots only; IBKR, AKShare, failover, arbitration, and routing remain out of scope.
 - Preserve the exchange prefix from CTP subscriptions and use it when market-data callbacks omit `ExchangeID`.
 
 - Added discovery for nested, flat CTP SDK packages and Linux libraries shipped without the usual `lib` filename prefix.

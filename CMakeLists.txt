@@ -16,6 +16,9 @@ add_library(market_data_core
   cpp/src/config.cpp
   cpp/src/logging.cpp
   cpp/src/market_tick.cpp
+  cpp/src/provider.cpp
+  cpp/src/provider_manager.cpp
+  cpp/src/instrument_mapping.cpp
   cpp/src/producer_identity.cpp
   cpp/src/dispatcher.cpp
   cpp/src/live_protocol.cpp
@@ -65,6 +68,7 @@ if(MD_BUILD_TESTS)
     cpp/tests/unit/test_ctp_normalizer.cpp
     cpp/tests/unit/test_ctp_state_machine.cpp
     cpp/tests/unit/test_ctp_simulated_pipeline.cpp)
+  target_sources(market_data_unit_tests PRIVATE cpp/tests/unit/test_provider_architecture.cpp)
   target_link_libraries(market_data_unit_tests PRIVATE market_data_core GTest::gtest_main)
   include(GoogleTest)
   gtest_discover_tests(market_data_unit_tests PROPERTIES LABELS unit)

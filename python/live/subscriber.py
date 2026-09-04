@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
+from collections import defaultdict
 from collections.abc import Awaitable, Callable
 import zmq
 import zmq.asyncio
@@ -13,6 +14,7 @@ class LiveSubscriber:
     def __init__(self,endpoint:str,cache:LatestQuoteCache,on_tick:TickCallback|None=None):
         self.endpoint=endpoint;self.cache=cache;self.on_tick=on_tick
         self.received_total=0;self.cache_updates_total=0;self.decode_failures_total=0;self.last_message_monotonic:float|None=None
+        self.provider_received_total=defaultdict(int)
         self._stop=asyncio.Event();self.ready=asyncio.Event();self.healthy=False
     async def run(self):
         context=zmq.asyncio.Context();socket=context.socket(zmq.SUB);socket.setsockopt(zmq.SUBSCRIBE,b"");socket.connect(self.endpoint)
@@ -24,7 +26,7 @@ class LiveSubscriber:
                 try:
                     tick=decode_tick(payload)
                     if topic.decode()!=expected_topic(tick):raise ValueError("topic does not match payload")
-                    updated=await self.cache.update(tick);self.received_total+=1;self.last_message_monotonic=time.monotonic()
+                    updated=await self.cache.update(tick);self.received_total+=1;self.provider_received_total[tick["provider"]]+=1;self.last_message_monotonic=time.monotonic()
                     if updated:self.cache_updates_total+=1
                     if updated and self.on_tick:
                         result=self.on_tick(tick)

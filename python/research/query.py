@@ -58,7 +58,13 @@ def _mapping_day(value: str | date) -> str:
 
 
 def _read_view(connection: duckdb.DuckDBPyConnection, files: list[str]) -> None:
-    connection.from_parquet(files, hive_partitioning=False).create_view("ticks")
+    connection.from_parquet(files, hive_partitioning=False, union_by_name=True).create_view("raw_ticks")
+    columns={row[0] for row in connection.execute("DESCRIBE raw_ticks").fetchall()};additions=[]
+    if "provider" not in columns:additions.append("'ctp'::VARCHAR AS provider")
+    if "event_type" not in columns:additions.append("'quote_snapshot'::VARCHAR AS event_type")
+    if "instrument_id" not in columns:additions.append("exchange || '.' || instrument AS instrument_id")
+    if "quality" not in columns:additions.append("'UNKNOWN'::VARCHAR AS quality")
+    connection.execute(f"CREATE VIEW ticks AS SELECT *, {', '.join(additions)} FROM raw_ticks" if additions else "CREATE VIEW ticks AS SELECT * FROM raw_ticks")
 
 
 def _time_predicate(start: datetime | None, end: datetime | None) -> tuple[str, list[datetime]]:
@@ -84,12 +90,16 @@ def load_ticks(
     end_day: str | None = None,
     start: datetime | None = None,
     end: datetime | None = None,
+    provider: str | None = None,
 ) -> pa.Table:
     """Load immutable raw snapshots from completed archive partitions."""
     files = _completed_files(
         Path(root), exchange, instrument, _validate_day(start_day), _validate_day(end_day)
     )
     predicate, parameters = _time_predicate(start, end)
+    if provider is not None:
+        if provider not in {"ctp","synthetic","ibkr","akshare"}:raise ValueError("invalid provider")
+        predicate=f"({predicate}) AND provider = ?";parameters.append(provider)
     with duckdb.connect() as connection:
         _read_view(connection, files)
         return connection.execute(

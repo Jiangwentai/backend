@@ -37,6 +37,9 @@ def test_load_ticks_reads_only_completed_partitions_and_filters_time(tmp_path: P
     )
     assert table.num_rows == 1
     assert table.column("seq").to_pylist() == [2]
+    assert table.column("provider").to_pylist() == ["ctp"]
+    assert load_ticks(tmp_path,"SHFE","zn2610",provider="ctp").num_rows==2
+    assert load_ticks(tmp_path,"SHFE","zn2610",provider="synthetic").num_rows==0
     with pytest.raises(ValueError):
         load_ticks(tmp_path, "../SHFE", "zn2610")
 

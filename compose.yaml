@@ -20,7 +20,7 @@ services:
     volumes:
       - ./sql/questdb:/schema:ro
     entrypoint: ["/bin/sh", "-ec"]
-    command: ["curl -fsS -G --data-urlencode query@/schema/001_ctp_market_data.sql http://questdb:9000/exec"]
+    command: ["for file in /schema/*.sql; do curl -fsS -G --data-urlencode query@$$file http://questdb:9000/exec; done"]
     restart: "no"
   postgres:
     image: postgres:17.6-bookworm

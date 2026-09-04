@@ -11,7 +11,7 @@ template <std::size_t N> void FixedString<N>::assign(std::string_view value) noe
 template <std::size_t N> std::string_view FixedString<N>::view() const noexcept {
   return {data.data(), std::char_traits<char>::length(data.data())};
 }
-template struct FixedString<37>; template struct FixedString<9>; template struct FixedString<32>;
+template struct FixedString<37>; template struct FixedString<9>; template struct FixedString<32>; template struct FixedString<64>;
 
 bool is_valid_price(double v) noexcept { return std::isfinite(v) && std::abs(v) < 1.0e100; }
 double normalize_price(double v) noexcept { return is_valid_price(v) ? v : std::numeric_limits<double>::quiet_NaN(); }

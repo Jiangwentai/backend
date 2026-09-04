@@ -9,7 +9,7 @@ def app_for(ticks,metadata=None):return create_app(settings=Settings(recovery_ti
 def test_rest_serializes_quote_without_internal_shape(tick):
     with TestClient(app_for([tick])) as client:
         response=client.get("/v1/quotes/SHFE.zn2610");assert response.status_code==200
-        value=response.json();assert value["symbol"]=="SHFE.zn2610" and value["event_ts"].endswith("Z") and value["recv_ts"].endswith("Z")
+        value=response.json();assert value["symbol"]=="SHFE.zn2610" and value["provider"]=="ctp" and value["event_type"]=="quote_snapshot" and value["event_ts"].endswith("Z") and value["recv_ts"].endswith("Z")
         assert value["bid"][0]=={"price":22575.0,"volume":42} and "bid_price" not in value
         assert len(client.get("/v1/quotes").json())==1
 

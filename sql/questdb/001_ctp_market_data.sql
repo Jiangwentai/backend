@@ -1,6 +1,10 @@
 CREATE TABLE IF NOT EXISTS ctp_market_data (
     event_ts TIMESTAMP,
     recv_ts TIMESTAMP_NS,
+    provider SYMBOL,
+    event_type SYMBOL,
+    instrument_id SYMBOL,
+    quality SYMBOL,
     producer_id SYMBOL,
     seq LONG,
     exchange SYMBOL,
@@ -19,5 +23,4 @@ CREATE TABLE IF NOT EXISTS ctp_market_data (
     bid_price4 DOUBLE, bid_volume4 INT, ask_price4 DOUBLE, ask_volume4 INT,
     bid_price5 DOUBLE, bid_volume5 INT, ask_price5 DOUBLE, ask_volume5 INT
 ) TIMESTAMP(event_ts) PARTITION BY DAY WAL
-DEDUP UPSERT KEYS(event_ts, producer_id, seq);
-
+DEDUP UPSERT KEYS(event_ts, provider, producer_id, seq);

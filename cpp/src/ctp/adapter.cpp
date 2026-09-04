@@ -33,7 +33,7 @@ struct TransparentStringHash {
 
 struct MarketDataAdapter::Impl final : CThostFtdcMdSpi {
   Impl(SpscQueue<MarketTick>& queue, ProducerIdentity& identity, Config value)
-      : queue_(queue), identity_(identity), config_(std::move(value)), machine_(config_.authentication_required) {
+      : queue_(queue), sink_(queue), identity_(identity), config_(std::move(value)), machine_(config_.authentication_required) {
     for (const auto& subscription : config_.subscriptions) {
       const auto dot = subscription.find('.');
       const auto instrument = dot == std::string::npos ? subscription : subscription.substr(dot + 1);
@@ -56,7 +56,7 @@ struct MarketDataAdapter::Impl final : CThostFtdcMdSpi {
 
   void set_state(State state) noexcept {
     state_.store(state, std::memory_order_release);
-    spdlog::info("ctp_state state={}", state_name(state));
+    spdlog::info("provider_state provider=ctp state={}", state_name(state));
   }
 
   void start() {
@@ -113,7 +113,7 @@ struct MarketDataAdapter::Impl final : CThostFtdcMdSpi {
   }
 #endif
 
-  void subscribe() noexcept {
+  void request_subscriptions() noexcept {
     active_.clear();
     std::vector<char*> instruments;
     instruments.reserve(desired_.size());
@@ -128,7 +128,7 @@ struct MarketDataAdapter::Impl final : CThostFtdcMdSpi {
 
   void apply(Action action) noexcept {
     if (action == Action::login) request_login();
-    else if (action == Action::subscribe) subscribe();
+    else if (action == Action::subscribe) request_subscriptions();
 #ifdef MD_CTP_HAS_AUTHENTICATE
     else if (action == Action::authenticate) request_authenticate();
 #endif
@@ -185,19 +185,22 @@ struct MarketDataAdapter::Impl final : CThostFtdcMdSpi {
     for(std::size_t i=0;i<5;++i){snapshot.bid_price[i]=bid_prices[i];snapshot.bid_volume[i]=bid_volumes[i];snapshot.ask_price[i]=ask_prices[i];snapshot.ask_volume[i]=ask_volumes[i];}
     const auto exchange=exchange_by_instrument_.find(snapshot.instrument.view());
     const auto fallback_exchange=exchange==exchange_by_instrument_.end()?std::string_view{}:std::string_view{exchange->second};
-    const auto result=normalize_and_enqueue(snapshot,recv_ns,recv_time,identity_,queue_,fallback_exchange);if(result==IngressResult::invalid){++invalid_ticks_;return;}if(result==IngressResult::queue_full){++ingress_rejected_;return;}last_tick_ns_.store(recv_ns);
+    const auto result=normalize_and_publish(snapshot,recv_ns,recv_time,identity_,sink_,fallback_exchange);if(result==IngressResult::invalid){++invalid_ticks_;return;}if(result==IngressResult::queue_full){++ingress_rejected_;return;}last_tick_ns_.store(recv_ns);
   }
 
   int next_request_id() noexcept { return request_id_.fetch_add(1); }
   Metrics metrics() const noexcept {return{connected_,logged_in_,ready_,ticks_received_,invalid_ticks_,ingress_rejected_,disconnects_,reconnects_,login_failures_,subscription_successes_,subscription_failures_,last_tick_ns_};}
 
-  SpscQueue<MarketTick>& queue_;ProducerIdentity& identity_;Config config_;StateMachine machine_;CThostFtdcMdApi* api_{};std::string front_address_;std::vector<std::string> desired_;std::unordered_map<std::string,std::string,TransparentStringHash,std::equal_to<>> exchange_by_instrument_;std::unordered_set<std::string> desired_set_,active_;std::atomic<State> state_{State::disconnected};std::atomic<int> request_id_{1};std::atomic<bool> connected_{false},logged_in_{false},ready_{false},ever_connected_{false};std::atomic<std::uint64_t> ticks_received_{0},invalid_ticks_{0},ingress_rejected_{0},disconnects_{0},reconnects_{0},login_failures_{0},subscription_successes_{0},subscription_failures_{0};std::atomic<std::int64_t> last_tick_ns_{0};
+  SpscQueue<MarketTick>& queue_;QueueMarketEventSink sink_;ProducerIdentity& identity_;Config config_;StateMachine machine_;CThostFtdcMdApi* api_{};std::string front_address_;std::vector<std::string> desired_;std::unordered_map<std::string,std::string,TransparentStringHash,std::equal_to<>> exchange_by_instrument_;std::unordered_set<std::string> desired_set_,active_;std::atomic<State> state_{State::disconnected};std::atomic<int> request_id_{1};std::atomic<bool> connected_{false},logged_in_{false},ready_{false},ever_connected_{false};std::atomic<std::uint64_t> ticks_received_{0},invalid_ticks_{0},ingress_rejected_{0},disconnects_{0},reconnects_{0},login_failures_{0},subscription_successes_{0},subscription_failures_{0};std::atomic<std::int64_t> last_tick_ns_{0};
 };
 
 MarketDataAdapter::MarketDataAdapter(SpscQueue<MarketTick>& queue,ProducerIdentity& identity,Config config):impl_(std::make_unique<Impl>(queue,identity,std::move(config))){}
 MarketDataAdapter::~MarketDataAdapter()=default;
 void MarketDataAdapter::start(){impl_->start();}
 void MarketDataAdapter::stop(){impl_->stop();}
+void MarketDataAdapter::subscribe(const std::vector<Subscription>& subscriptions){if(impl_->api_!=nullptr)throw std::logic_error("CTP subscriptions can only change while stopped");for(const auto& value:subscriptions){if(value.kind!=MarketDataKind::quote)continue;const auto dot=value.instrument_id.find('.');const auto instrument=dot==std::string::npos?value.instrument_id:value.instrument_id.substr(dot+1);const auto exchange=dot==std::string::npos?std::string{}:value.instrument_id.substr(0,dot);if(!instrument.empty()&&impl_->desired_set_.insert(instrument).second)impl_->desired_.push_back(instrument);if(!instrument.empty()&&!exchange.empty())impl_->exchange_by_instrument_[instrument]=exchange;}}
+void MarketDataAdapter::unsubscribe(const std::vector<Subscription>& subscriptions){if(impl_->api_!=nullptr)throw std::logic_error("CTP subscriptions can only change while stopped");for(const auto& value:subscriptions){const auto dot=value.instrument_id.find('.');const auto instrument=dot==std::string::npos?value.instrument_id:value.instrument_id.substr(dot+1);impl_->desired_set_.erase(instrument);impl_->exchange_by_instrument_.erase(instrument);std::erase(impl_->desired_,instrument);}}
+ProviderHealth MarketDataAdapter::health()const{const auto metrics=impl_->metrics();ProviderState state=ProviderState::degraded;switch(impl_->state_.load()){case State::disconnected:state=ProviderState::stopped;break;case State::connecting:case State::connected:case State::logging_in:case State::logged_in:case State::subscribing:state=ProviderState::connecting;break;case State::authenticating:case State::authenticated:state=ProviderState::authenticating;break;case State::ready:state=ProviderState::ready;break;case State::reconnecting:state=ProviderState::reconnecting;break;case State::error:state=ProviderState::error;break;}return{ProviderId::ctp,state,metrics.connected,metrics.ready,metrics.last_tick_timestamp,metrics.last_tick_timestamp,{}};}
 State MarketDataAdapter::state()const noexcept{return impl_->state_.load();}
 Metrics MarketDataAdapter::metrics()const noexcept{return impl_->metrics();}
 }

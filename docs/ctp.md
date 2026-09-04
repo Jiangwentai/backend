@@ -32,7 +32,7 @@ The default is `ENABLE_CTP=OFF`. Enabling it without usable headers and a librar
 
 ## Configuration
 
-Use a local copy of `config/app.yaml` and select `source: ctp`. Configure `ctp.front_address`, `ctp.broker_id`, `ctp.user_id`, `ctp.flow_path`, and subscriptions. A subscription may be written as `SHFE.zn2610` or `zn2610`; only the instrument ID is passed to `SubscribeMarketData`, while `ExchangeID` is preserved from each callback.
+Use a local copy of `config/app.yaml`. Legacy `source: ctp` remains supported; Phase 9 configuration can instead set `providers.ctp.enabled: true` and independently enable or disable Synthetic. Configure `ctp.front_address`, `ctp.broker_id`, `ctp.user_id`, `ctp.flow_path`, and subscriptions. A subscription may be written as `SHFE.zn2610` or `zn2610`; only the instrument ID is passed to `SubscribeMarketData`.
 
 Provide secrets through the environment:
 
@@ -56,4 +56,6 @@ The session follows connect, optional authenticate, login, subscribe, and ready 
 
 `TradingDay` and `ActionDay` are preserved independently. A valid `ActionDay + UpdateTime + UpdateMillisec` is interpreted as Asia/Shanghai and stored as UTC. If `ActionDay` is empty, the date nearest to local receive time is selected with a 12-hour crossover boundary. Malformed time data is rejected and counted. CTP price sentinels become internal NaN and QuestDB NULL; cumulative volume and turnover remain cumulative.
 
-The ingress queue remains SPSC: synthetic and CTP inputs are mutually exclusive, and one MdApi instance is assumed to serialize market-data callbacks. Verify that assumption in the documentation supplied with the actual SDK before production deployment.
+CTP owns a dedicated SPSC ingress queue, so it may run concurrently with Synthetic without turning the callback boundary into MPSC. One MdApi instance is still assumed to serialize market-data callbacks. Verify that assumption in the documentation supplied with the actual SDK before production deployment.
+
+Many fronts leave callback `ExchangeID` empty. The adapter records the exchange prefix supplied in each configured subscription and the normalizer uses that mapping as the fallback; a tick is rejected only when neither callback nor subscription mapping can resolve the exchange.

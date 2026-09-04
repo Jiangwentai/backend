@@ -6,7 +6,7 @@ from pathlib import Path
 import duckdb
 
 from archive.writer import verify_archive
-from research.query import _completed_files, _validate_day
+from research.query import _completed_files, _read_view, _validate_day
 
 
 @dataclass(frozen=True)
@@ -50,26 +50,26 @@ def check_archive(
     for filename in files:
         verify_archive(Path(filename).parent)
     with duckdb.connect() as connection:
-        connection.from_parquet(files, hive_partitioning=False).create_view("ticks")
+        _read_view(connection,files)
         values = connection.execute("""
             WITH ordered AS (
                 SELECT *, lag(volume) OVER (
-                    PARTITION BY exchange, instrument, trading_day
+                    PARTITION BY provider, exchange, instrument, trading_day
                     ORDER BY event_ts, producer_id, seq
                 ) AS previous_volume
                 FROM ticks
             )
             SELECT
                 count(*) AS row_count,
-                count(*) - count(DISTINCT (event_ts, producer_id, seq)) AS duplicate_identity,
-                count(*) FILTER (WHERE producer_id IS NULL OR producer_id = '' OR seq IS NULL) AS missing_identity,
+                count(*) - count(DISTINCT (event_ts, provider, producer_id, seq)) AS duplicate_identity,
+                count(*) FILTER (WHERE provider IS NULL OR provider = '' OR producer_id IS NULL OR producer_id = '' OR seq IS NULL) AS missing_identity,
                 count(*) FILTER (WHERE NOT regexp_full_match(trading_day, '[0-9]{8}')) AS invalid_trading_day,
                 count(*) FILTER (WHERE volume < 0) AS negative_volume,
                 count(*) FILTER (WHERE last_price IS NOT NULL AND NOT isfinite(last_price)) AS nonfinite_price,
                 count(*) FILTER (WHERE recv_ts < event_ts) AS receive_before_event,
                 count(*) FILTER (WHERE previous_volume IS NOT NULL AND volume < previous_volume) AS volume_decrease,
                 count(*) FILTER (WHERE bid_price1 IS NOT NULL AND ask_price1 IS NOT NULL AND bid_price1 > ask_price1) AS crossed_book
-            FROM ordered
+            FROM ordered WHERE event_type='quote_snapshot'
         """).fetchone()
     names = (
         ("duplicate_identity", "ERROR"),
