@@ -1,0 +1,10 @@
+{
+  "version": 6,
+  "configurePresets": [{
+    "name": "dev", "generator": "Ninja", "binaryDir": "${sourceDir}/build/dev",
+    "cacheVariables": {"CMAKE_BUILD_TYPE": "RelWithDebInfo", "MD_BUILD_TESTS": "ON", "MD_BUILD_BENCHMARKS": "ON"}
+  }],
+  "buildPresets": [{"name": "dev", "configurePreset": "dev"}],
+  "testPresets": [{"name": "unit", "configurePreset": "dev", "filter": {"exclude": {"label": "integration"}}, "output": {"outputOnFailure": true}}]
+}
+

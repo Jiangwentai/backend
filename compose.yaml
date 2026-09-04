@@ -1,0 +1,57 @@
+services:
+  questdb:
+    image: questdb/questdb:9.4.3
+    ports:
+      - "${QDB_HTTP_PORT:-9000}:9000"
+      - "${QDB_PG_PORT:-8812}:8812"
+      - "${QDB_METRICS_PORT:-9003}:9003"
+    volumes:
+      - questdb-data:/var/lib/questdb
+    healthcheck:
+      test: ["CMD", "curl", "-fsSG", "--data-urlencode", "query=SELECT 1", "http://localhost:9000/exec"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  questdb-init:
+    image: curlimages/curl:8.15.0
+    depends_on:
+      questdb:
+        condition: service_healthy
+    volumes:
+      - ./sql/questdb:/schema:ro
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["curl -fsS -G --data-urlencode query@/schema/001_ctp_market_data.sql http://questdb:9000/exec"]
+    restart: "no"
+  postgres:
+    image: postgres:17.6-bookworm
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-market_data}
+      POSTGRES_USER: ${POSTGRES_USER:-market_data}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev-only-password}
+    ports: ["${POSTGRES_PORT:-5432}:5432"]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./sql/postgresql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    environment:
+      ZMQ_SUB_ENDPOINT: ${ZMQ_SUB_ENDPOINT:-tcp://host.docker.internal:5556}
+      QDB_HTTP_URL: http://questdb:9000
+      WEBSOCKET_QUEUE_CAPACITY: ${WEBSOCKET_QUEUE_CAPACITY:-128}
+      LIVE_STALE_AFTER_SECONDS: ${LIVE_STALE_AFTER_SECONDS:-5}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports: ["${API_PORT:-8000}:8000"]
+    depends_on:
+      questdb-init:
+        condition: service_completed_successfully
+volumes:
+  questdb-data:
+  postgres-data:

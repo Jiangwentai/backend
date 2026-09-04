@@ -1,0 +1,23 @@
+CREATE TABLE IF NOT EXISTS ctp_market_data (
+    event_ts TIMESTAMP,
+    recv_ts TIMESTAMP_NS,
+    producer_id SYMBOL,
+    seq LONG,
+    exchange SYMBOL,
+    instrument SYMBOL,
+    trading_day SYMBOL,
+    action_day SYMBOL,
+    last_price DOUBLE,
+    volume LONG,
+    turnover DOUBLE,
+    open_interest DOUBLE,
+    upper_limit_price DOUBLE,
+    lower_limit_price DOUBLE,
+    bid_price1 DOUBLE, bid_volume1 INT, ask_price1 DOUBLE, ask_volume1 INT,
+    bid_price2 DOUBLE, bid_volume2 INT, ask_price2 DOUBLE, ask_volume2 INT,
+    bid_price3 DOUBLE, bid_volume3 INT, ask_price3 DOUBLE, ask_volume3 INT,
+    bid_price4 DOUBLE, bid_volume4 INT, ask_price4 DOUBLE, ask_volume4 INT,
+    bid_price5 DOUBLE, bid_volume5 INT, ask_price5 DOUBLE, ask_volume5 INT
+) TIMESTAMP(event_ts) PARTITION BY DAY WAL
+DEDUP UPSERT KEYS(event_ts, producer_id, seq);
+

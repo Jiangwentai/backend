@@ -1,0 +1,18 @@
+queues:
+  ingress_capacity: 1048576
+  persistence_capacity: 1048576
+  live_capacity: 65536
+questdb:
+  host: 127.0.0.1
+  port: 9000
+  sf_dir: ./data/qwp-spool
+  max_batch_rows: 500
+  max_batch_latency_ms: 20
+  ack_timeout_ms: 30000
+synthetic:
+  rate: 10000
+  symbols: [SHFE.zn2610, DCE.i2601]
+logging:
+  level: info
+live:
+  pub_endpoint: tcp://127.0.0.1:5556

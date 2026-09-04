@@ -1,0 +1,4 @@
+#include "market_data/dispatcher.hpp"
+#include <gtest/gtest.h>
+TEST(Dispatcher, FansOutToPersistenceWithoutCompetingConsumer){market_data::SpscQueue<market_data::MarketTick>in(4),out(4);market_data::MarketTick t;t.seq=7;ASSERT_TRUE(in.try_push(t));market_data::Dispatcher d(in,out);d.start();while(!in.empty())std::this_thread::yield();d.request_stop();d.join();market_data::MarketTick got;ASSERT_TRUE(out.try_pop(got));EXPECT_EQ(got.seq,7);}
+TEST(Dispatcher, FansOutIndependentlyToLive){market_data::SpscQueue<market_data::MarketTick>in(4),persist(4);market_data::LiveQueue live(4);market_data::MarketTick t;t.seq=8;ASSERT_TRUE(in.try_push(t));market_data::Dispatcher d(in,persist,&live);d.start();while(!in.empty())std::this_thread::yield();d.request_stop();d.join();market_data::MarketTick p,l;ASSERT_TRUE(persist.try_pop(p));ASSERT_TRUE(live.try_pop(l));EXPECT_EQ(p.seq,8);EXPECT_EQ(l.seq,8);}
