@@ -4,6 +4,8 @@ The QuestDB path remains durability-first QWP Store-and-Forward with at-least-on
 
 ZeroMQ and WebSocket delivery are best effort. ZeroMQ does not replay during API downtime; QuestDB is queried once at API startup to recover latest state, never polled as a live bus.
 
+The C++ publisher submits topic and MessagePack body through cppzmq's multipart helper with non-blocking flags. A send exception ends the current publisher socket lifecycle; the implementation never starts a new logical message after an uncertain partial multipart operation. Standard PUB high-water-mark loss is still intentionally lossy and cannot be inferred reliably from a successful send return value.
+
 WebSocket clients receive nothing until they subscribe with protocol version 1:
 
 ```json

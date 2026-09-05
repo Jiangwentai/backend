@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-09-05 — ZeroMQ multipart hardening
+
+- Replaced manually paired topic/body sends with cppzmq's `send_multipart` helper while retaining non-blocking Live Path semantics.
+- A send exception now terminates that publisher socket lifecycle instead of continuing with potentially uncertain multipart state. Normal PUB/HWM loss remains best-effort and is not falsely reported as reliable delivery.
+
 ## 2026-09-05 — Phase 12
 
 - Added a provider-neutral read-side selector with `explicit`, `preferred`, and `ranked` policies. Default `explicit` mode preserves prior behavior and requires `provider=` when multiple feeds coexist.

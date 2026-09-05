@@ -13,3 +13,6 @@
 - Run focused tests after each module and the full regression suite before completion.
 - Keep README, CHANGELOG, architecture, delivery semantics, and task status synchronized with implemented behavior.
 - Treat existing uncommitted/untracked files as user work; do not discard them.
+- Keep provider selection as a read-side projection over independent cached observations. Default to explicit selection and disabled fallback; never merge, average, overwrite, or republish provider prices unless a future phase explicitly requires it.
+- Keep C++ ZeroMQ live publication non-blocking and multipart-safe. Use the pinned cppzmq multipart API, and never reuse a socket after an exception leaves multipart state uncertain.
+- Treat standard ZeroMQ PUB delivery as lossy: a successful send is not subscriber delivery and must not be reported as a durability guarantee.

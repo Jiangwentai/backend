@@ -17,7 +17,7 @@ SyntheticProvider and/or CtpMarketDataAdapter
            -> MessagePack v2 multipart frames
            -> Python async ZeroMQ SUB
            -> provider-aware LatestQuoteCache
-              |-> REST
+              |-> ProviderSelector -> REST
               `-> bounded WebSocket connection manager
 ```
 
@@ -25,8 +25,11 @@ Phase 11/11B adds a separate historical plane:
 
 ```text
 AKShare worker -> daily/1m endpoint adapters -> immutable raw Parquet
-                              `------> canonical daily bars -> QuestDB historical_bars
+                              `------> canonical daily/1m bars -> QuestDB historical_bars
                               `------> reference/run/revision metadata -> PostgreSQL
+
+AKShare quote poller -> QuoteSnapshot(BEST_EFFORT) -> shared live ingress
+                    -> ZeroMQ PUB :5557 -> same FastAPI subscriber/cache
 ```
 
 ## Important decisions
@@ -41,10 +44,11 @@ AKShare worker -> daily/1m endpoint adapters -> immutable raw Parquet
 - Provider-native APIs stop at adapters. Realtime, historical, and reference capabilities use segregated interfaces; `ProviderManager` owns lifecycle, subscription routing, capabilities, and health.
 - Synthetic and CTP may run concurrently. Each provider has a dedicated producer identity and SPSC queue; the Dispatcher round-robins all registered ingress queues.
 - The canonical model reserves quote, trade, bid/ask, depth, and bar variants. Phase 9 providers and downstream sinks currently emit/accept quote snapshots only.
-- AKShare is an optional Python-only historical/reference and best-effort quote provider. History remains isolated; a separate bounded quote poller emits `QuoteSnapshot` through the common live ingress and an independent ZeroMQ endpoint. It never runs on CTP callbacks, claims authoritative realtime, synthesizes trades, or triggers fallback.
+- AKShare is an optional Python-only historical/reference and best-effort quote provider. History remains isolated; a separate bounded quote poller emits `QuoteSnapshot` through the common live ingress and an independent ZeroMQ endpoint. It never runs on CTP callbacks, claims authoritative realtime, or synthesizes trades. It can be selected as fallback only by an explicitly enabled Phase 12 policy.
 - FastAPI recovery subscribes to ZeroMQ before querying QuestDB; both live and recovery ticks pass through the same cache conflict resolver.
 - FastAPI V1 runs exactly one worker because cache, connection registry, and metrics are process-local.
 - Phase 12 adds a read-side `ProviderSelector` after the provider-aware cache. Explicit provider reads bypass arbitration; provider-omitted reads use the configured policy. Selection never overwrites source observations or changes persistence and fallback defaults off.
+- C++ ZeroMQ publication uses pinned cppzmq `send_multipart(..., dontwait)` for the topic/body pair. A send exception terminates that publisher socket lifecycle; it never continues with potentially uncertain multipart state. Normal PUB/HWM loss remains best effort and is not observable as a failed send.
 
 ## Module responsibilities
 
@@ -54,17 +58,17 @@ AKShare worker -> daily/1m endpoint adapters -> immutable raw Parquet
 - `instrument_mapping.*`: explicit provider-symbol to canonical-instrument mapping boundary.
 - `dispatcher.*`: sole consumer of all provider ingress queues and fan-out owner. Persistence is enqueued before best-effort live delivery.
 - `questdb_writer.*`: dedicated QWP batching, Store-and-Forward acceptance, shutdown ACK.
-- `live_queue.hpp`, `zmq_publisher.*`, `live_protocol.*`: bounded C++ live path and MessagePack v2 wire contract with v1 decode compatibility.
+- `live_queue.hpp`, `zmq_publisher.*`, `live_protocol.*`: bounded C++ live path, non-blocking multipart publication, and MessagePack v2 wire contract with v1 decode compatibility.
 - `synthetic_generator.*`: synthetic realtime provider and CI/development fixture.
 - `pipeline.*`: thread/object ownership and ordered startup/shutdown.
-- `python/live`: the single ZeroMQ subscriber implementation and latest cache.
+- `python/live`: multi-endpoint ZeroMQ subscriber, provider-aware latest cache, shared Python live ingress/publisher/persistence transports, and read-side provider selector.
 - `python/api`: FastAPI models, lifespan, REST/WS, health, recovery repository, and WebSocket backpressure.
 - `python/api/postgres_repository.py`: async PostgreSQL reference-metadata query boundary used by `/v1/instruments`.
 - `sql/postgresql/002_reference_metadata.sql`, `003_providers.sql`: reference metadata plus provider registry and provider-instrument validity mappings.
 - `python/archive`: offline paged QuestDB reader, explicit Arrow schema, immutable ZSTD Parquet writer, verification manifest, and CLI.
 - `python/research`: read-only DuckDB scans over verified Parquet, trading-day-aware OHLCV derivation, explicit continuous-contract resolution, and CLI.
 - `python/quality`: read-only verified-archive integrity and anomaly checks with machine-readable reports and CI exit status.
-- `python/providers/akshare`: optional client seam, endpoint adapters, canonical historical/reference batches, immutable raw archive, repositories, scheduler/backfill, health, metrics, and CLI.
+- `python/providers/akshare`: optional client seam, daily/1m/reference/quote adapters, canonical historical batches and `QuoteSnapshot`, immutable raw archive, repositories, scheduler/backfill, quote poller, health, metrics, and CLI.
 - `python/api/metrics.py`: Prometheus-compatible API/live/WebSocket/dependency metrics; collector and QuestDB metrics remain in their owning processes.
 - `sql/questdb/001_ctp_market_data.sql`, `002`–`006`: WAL/DEDUP snapshot schema and additive provider/event/instrument/quality migrations.
 - `sql/questdb/007_historical_bars.sql`: provider-aware canonical historical bars with semantic DEDUP identity.
@@ -85,6 +89,18 @@ AKShare worker -> daily/1m endpoint adapters -> immutable raw Parquet
 - Legacy `source` selection remains compatible; `providers.synthetic.enabled` and `providers.ctp.enabled` permit concurrent operation. Builds default to `ENABLE_CTP=OFF`; enabling CTP requires an operator-supplied `CTP_SDK_ROOT`.
 - The locally supplied Linux x86-64 v6.7.13 market-data SDK compiles with `ENABLE_CTP=ON`. It does not expose `ReqAuthenticate`, so authentication is compiled out for this package. Callback serialization must still be confirmed from its documentation, and a credentialed live-front smoke test remains required before production deployment.
 
+## Important constraints and unfinished validation
+
+- The local `ctp_file/` directory is operator-supplied and Git-ignored. Do not vendor or expose its proprietary files.
+- A broker test front has reached CTP `READY`; an active market-hours test must still prove tick flow through QuestDB and REST/WebSocket.
+- Standard PUB is freshness-first and may silently drop at HWM. `messages_sent_total` is socket acceptance, not end-to-end delivery.
+- A publisher send exception stops the publisher thread. No automatic socket recreation currently exists; a future implementation must avoid uncertain multipart reuse and preserve shutdown ordering.
+- Phase 12 affects provider-omitted REST quote reads only. WebSocket currently preserves each provider observation and has no selector protocol; clients must filter provider.
+- FastAPI remains one worker because cache, selector, metrics, and WebSocket state are process-local.
+- AKShare realtime is disabled by default and never authoritative. Its Sina 1m endpoint has a bounded recent window; ordinary night-session derivation does not invent exchange holidays.
+- Historical bar identity and realtime transport identity remain distinct. Provider selection is a read projection and never becomes a persisted market event.
+- The provider-aware QuestDB realtime table retains the legacy name `ctp_market_data`; renaming is deferred unless a future migration has functional justification.
+
 ## Important files
 
 - Requirements: `REQUIREMENTS.md`
@@ -92,5 +108,8 @@ AKShare worker -> daily/1m endpoint adapters -> immutable raw Parquet
 - Build graph: `CMakeLists.txt`, `cmake/Dependencies.cmake`
 - Runtime configuration: `config/app.yaml`, `.env.example`
 - C++ lifecycle: `cpp/include/market_data/pipeline.hpp`, `cpp/src/pipeline.cpp`
+- Multipart publisher: `cpp/src/zmq_publisher.cpp`
+- Provider selection: `python/live/selection.py`, `docs/phases/phase-12-provider-selection.md`
+- AKShare operations: `python/providers/akshare/`, `docs/providers/akshare.md`
 - Phase 4 request: `/root/.codex/attachments/58d6cac8-029d-4e96-8c0f-1448068b98b2/pasted-text.txt`
 - Existing detailed docs: `docs/architecture.md`, `docs/delivery-semantics.md`

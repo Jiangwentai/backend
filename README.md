@@ -5,7 +5,7 @@ C++20 persistence pipeline for provider-independent market snapshots. The implem
 `Synthetic Provider | CTP Provider -> provider-local bounded SPSC queues -> fan-in Dispatcher`, followed by two independent paths:
 
 - Persistence: `bounded persistence SPSC queue -> dedicated QuestDB QWP writer -> disk Store-and-Forward -> QuestDB WAL/DEDUP`.
-- Live IPC: `bounded freshness-first LiveQueue -> dedicated ZeroMQ PUB -> multipart(topic, MessagePack v2) -> async Python SUB -> provider-aware LatestQuoteCache`.
+- Live IPC: `bounded freshness-first LiveQueue -> dedicated ZeroMQ PUB -> multipart(topic, MessagePack v2) -> async Python SUB -> provider-aware LatestQuoteCache`. Topic/body are submitted through cppzmq's non-blocking multipart helper; a send exception ends that publisher socket lifecycle.
 - Web API: `LatestQuoteCache -> FastAPI REST + subscription-based WebSocket manager`.
 - Metadata: `FastAPI -> asyncpg pool -> PostgreSQL exchanges/products/contracts/calendars/sessions/roll metadata`.
 - Archive: `QuestDB closed logical partition -> paged reader -> Arrow schema -> immutable ZSTD Parquet + verification manifest`.

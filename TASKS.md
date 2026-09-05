@@ -2,72 +2,107 @@
 
 Last updated: 2026-09-05
 
+## Current task
+
+No implementation phase is active. Phase 12 and the ZeroMQ multipart hardening are complete. The next session should inspect `ROADMAP.md` and wait for an explicitly requested next phase; do not infer or pre-implement Phase 13.
+
+Immediate remaining work is operator validation and maintenance:
+
+- run a market-hours CTP smoke test through callback → QuestDB → ZeroMQ → FastAPI/WebSocket;
+- confirm from authoritative SDK/broker documentation that one MdApi instance serializes `OnRtnDepthMarketData` callbacks, which underpins the SPSC ingress assumption;
+- run internet-dependent AKShare 1-minute and quote smoke tests against mapped contracts;
+- decide in a future explicitly scoped phase whether WebSocket subscriptions need provider-selection semantics. Phase 12 currently selects only provider-omitted REST quote reads.
+
 ## Completed
 
-- Phase 0: CMake bootstrap, pinned dependencies, Docker Compose, QuestDB, PostgreSQL bootstrap, YAML/environment configuration, and structured logging.
-- Phase 1: provider-neutral `MarketTick`, stable process `producer_id`, global monotonic `seq`, timestamp/invalid-value normalization, bounded ingress and persistence queues, dispatcher, synthetic generator, QuestDB QWP Store-and-Forward writer, WAL/DEDUP schema, graceful shutdown, unit/integration tests, and throughput benchmark.
-- Phase 2: independent bounded Live Path, C++ ZeroMQ PUB, MessagePack v1 multipart protocol, Python SUB, `LatestQuoteCache`, live metrics, cross-language integration tests, and combined persistence/live benchmark.
-- Phase 3: FastAPI lifespan, latest-quote REST endpoints, health endpoint, explicit WebSocket subscriptions, bounded per-client latest-per-symbol coalescing, startup recovery from QuestDB, single-worker deployment, tests, benchmark, and documentation.
-- Phase 0–3 full external integration was last validated with QuestDB: CTest 15/15 and Python 3.12 tests 17/17 passed. The last combined 3-second benchmark processed 30,001 events end-to-end at approximately 10,000.3 events/s with zero persistence or live-queue loss.
+- Phase 0: CMake bootstrap, pinned dependencies, Docker Compose, QuestDB/PostgreSQL bootstrap, configuration, and structured logging.
+- Phase 1: provider-neutral `MarketTick`, stable `producer_id`, monotonic `seq`, normalization, bounded queues, Dispatcher, Synthetic provider, QWP Store-and-Forward, WAL/DEDUP, shutdown, tests, and benchmark.
+- Phase 2: independent Live Path, ZeroMQ PUB/SUB, MessagePack protocol, Python subscriber/cache, metrics, cross-language test, and benchmark.
+- Phase 3: FastAPI lifespan, REST, health, explicit WebSocket subscriptions, bounded per-client coalescing, startup recovery, tests, and single-worker deployment.
+- Phase 4: optional SDK-gated CTP adapter, state machine, login/reconnect/resubscription, empty-`ExchangeID` configured fallback, callback normalization, and simulated tests. The local Git-ignored SDK builds and a broker test front reached `READY`.
+- Phase 5: normalized PostgreSQL reference metadata, async repository, `/v1/instruments`, health, migrations, and tests.
+- Phase 6: paged QuestDB archive source, immutable ZSTD Parquet partitions/manifests, verification, CLI, and tests.
+- Phase 7: DuckDB research, 1m/5m/1h/1d bars, cumulative-volume differencing, trading-day handling, continuous mappings, CLI/API helper, and tests.
+- Phase 8: monitoring, Prometheus API metrics, health, archive audits, quality CLI/CI status, and tests.
+- Phase 9: canonical multi-provider identity/events, segregated interfaces, `ProviderManager`, provider-local SPSC fan-in, provider-aware storage/live/API/archive/research paths, migrations, tests, and benchmark.
+- Phase 11: optional pinned AKShare historical/reference worker, registry, mappings, immutable raw archive, daily bars, revisions, repositories, retry/rate limiting, health/metrics, scheduler/backfill, CLI, and tests.
+- Phase 11B: AKShare 1-minute history and opt-in `BEST_EFFORT` quotes, normalization, incomplete-coverage reporting, raw lineage, common storage, independent poller, shared live ingress, staleness, optional persistence, Compose service, and tests.
+- Phase 12: read-side provider selection with safe `explicit` default, `preferred`/`ranked` modes, freshness, opt-in fallback/stale use, transparent decisions, discrepancy diagnostics, metrics, and tests.
+- ZeroMQ multipart hardening: C++ topic/body publication uses pinned cppzmq `send_multipart(..., dontwait)`; a send exception ends that socket lifecycle instead of continuing with uncertain multipart state.
 
-## Phase 4 implementation complete pending operator SDK verification
+## Latest verification
 
-The Phase 4 request is in `/root/.codex/attachments/58d6cac8-029d-4e96-8c0f-1448068b98b2/pasted-text.txt`. Read it and all of `REQUIREMENTS.md` before continuing.
+- Python after Phase 12: `65 passed, 6 skipped`; skips are environment-gated integration tests. Two upstream Starlette/httpx deprecation warnings remain.
+- Default C++/cross-language suite after multipart hardening: `37/37 passed`.
+- `docker compose --profile akshare config -q` passed after Phase 11B/12.
+- `git diff --check` passed after multipart hardening.
+- Live CTP operator output confirmed connect, login, subscription, and `READY`; this did not prove market-hours tick persistence and API/WebSocket delivery.
 
-Implemented:
+## Remaining work, known bugs, and limitations
 
-- Added an SDK-gated `CThostFtdcMdApi`/`CThostFtdcMdSpi` adapter; only its implementation includes proprietary headers.
-- Added optional authentication API probing, login, desired/active subscription tracking, reconnect/resubscription, metrics, and callback normalization.
-- Added `synthetic|ctp` source selection without bypassing the existing Dispatcher or either downstream path.
-- Added SDK-free normalizer, state-machine, and simulated dual-path tests plus configuration and setup documentation.
-- The default `ENABLE_CTP=OFF` build is CI-safe. The locally supplied Linux x86-64 v6.7.13 market-data SDK now compiles successfully with `ENABLE_CTP=ON`; its header has no `ReqAuthenticate`, so this package uses the direct login path.
-- Current CTP-enabled regression result: all 24 SDK-independent unit tests passed. A credentialed front/login/subscription smoke test remains operator verification.
+- No Phase 10 specification exists in this handoff. Follow explicit roadmap/user requests rather than inferred numbering.
+- `ctp_file/` is operator-supplied and Git-ignored. Never vendor it. The supplied Linux x86-64 v6.7.13 MdApi lacks `ReqAuthenticate`, so this package compiles the direct-login path.
+- Confirm CTP callback serialization. If callbacks can be concurrent, deliberately revise the SPSC design without adding callback blocking.
+- Run a market-hours CTP end-to-end test and verify real ticks, queue metrics, QuestDB rows, ZeroMQ, REST, and WebSocket.
+- Standard `ZMQ_PUB` is deliberately lossy at HWM. A successful send means socket acceptance, not subscriber delivery; HWM loss cannot be counted reliably by `messages_sent_total`.
+- A ZeroMQ send exception currently stops the publisher thread/socket. Automatic recreation is unfinished; any future restart must not reuse uncertain multipart state and must remain outside callbacks.
+- FastAPI must remain one worker because cache, selector, metrics, and WebSocket clients are process-local.
+- Phase 12 selection applies to provider-omitted REST quote reads. WebSocket sends provider-specific observations; clients must filter provider, and automatic mid-bar provider switching is unsafe.
+- AKShare realtime defaults off and remains `BEST_EFFORT`. Sina 1-minute history is a bounded recent window without arbitrary range pagination.
+- AKShare night-session fallback handles normal weekdays/weekends; authoritative exchange holidays require calendar metadata and must not be guessed.
+- `provider_instrument_id` is optional and intended for stable native IDs such as IBKR `conId`; AKShare requests use `provider_symbol`.
+- QuestDB table `ctp_market_data` is provider-specific naming debt, although schema and DEDUP identity are provider-aware. Do not perform a cosmetic migration without explicit scope.
+- QuestDB retention deletion remains operator-only after complete archive verification.
+- External integration tests require their DSNs/fixtures. FastAPI tests emit non-failing Starlette/httpx deprecation warnings.
+- `repomix-output.xml` is currently modified user/generated work unrelated to the publisher change; preserve it unless explicitly asked to regenerate or remove it.
 
-Before continuing, review these preliminary files critically. They may be revised; do not treat their API as final.
+## Important files
 
-## Operator verification still required
-
-- Confirm from that SDK's documentation that one MdApi instance serializes `OnRtnDepthMarketData` callbacks, preserving the SPSC ingress assumption.
-- Optionally run a secret-managed live front/account smoke test and verify lifecycle logs, subscriptions, metrics, QuestDB rows, and WebSocket delivery.
-
-## Later phases
-
-- Phase 5: PostgreSQL metadata expansion — implemented with normalized schema, async repository, `/v1/instruments`, health integration, and tests.
-- Phase 6: Parquet archive — implemented with paged QuestDB reads, immutable ZSTD Parquet partitions, atomic completion manifests, verification, CLI, and tests. QuestDB retention remains an explicit operator action after complete physical-day verification.
-- Phase 7: DuckDB research and derived data — implemented with completed-partition tick scans, 1m/5m/1h/1d OHLCV bars, cumulative-volume differencing, trading-day-aware daily aggregation, explicit continuous mappings, CLI, REST helper, and tests.
-- Phase 8: monitoring and quality — implemented with unified collector snapshots, structured shutdown metrics, Prometheus-compatible API metrics, component health, immutable archive audits, CI exit codes, operational alert guidance, and tests.
-- Phase 9: multi-provider architecture — implemented with canonical provider/event identity, segregated provider interfaces, ProviderManager, provider-local SPSC fan-in, migrated Synthetic/CTP providers, provider-aware QuestDB/live/API/archive/research/quality paths, additive database migrations, regression tests, and benchmark verification.
-- Phase 11: AKShare historical/reference provider — implemented as an optional Python worker with pinned dependency, explicit endpoint registry, Sina daily/reference adapters, canonical mapping, immutable raw archive, semantic bar idempotency and revisions, PostgreSQL/QuestDB repositories, throttling/retry, health/metrics, scheduling, resumable backfill, CLI, offline tests, and documentation. Realtime polling remains disabled.
-- Phase 11B: AKShare 1-minute historical bars and opt-in best-effort quotes — implemented with canonical mapping, Asia/Shanghai normalization and night-session trading-day handling, raw lineage, common historical storage/revisions, resumable backfill and refresh, a bounded quote poller, shared live ingress, provider-aware cache/API, explicit staleness, optional generic persistence, metrics, tests, and documentation. Realtime polling defaults to disabled.
-- Phase 12: Provider selection, arbitration, and failover — implemented as a read-side policy layer with backward-compatible explicit mode, configurable preferred/ranked selection, per-provider freshness, opt-in fallback and stale use, transparent selection metadata, discrepancy diagnostics, metrics, API tests, and no mutation of raw provider observations.
-
-Do not start these while Phase 4 is active.
-
-## Known bugs and caveats
-
-- There is no CTP SDK in the repository. Never vendor proprietary headers or binaries unless the user explicitly supplies a legitimately distributable SDK.
-- The preliminary Phase 4 files are uncompiled and may contain integration defects until CMake and tests are added.
-- FastAPI's current test stack emits upstream deprecation warnings about Starlette `TestClient` using `httpx`; tests pass and runtime behavior is unaffected.
-- Integration tests are environment-gated and skip without QuestDB/C++ fixture variables.
-- The repository currently has no committed baseline: `git status` reports project files as untracked. Do not delete or overwrite them under the assumption that they are disposable.
+- Instructions/status: `AGENTS.md`, `REQUIREMENTS.md`, `ROADMAP.md`, `ARCHITECTURE.md`, `TASKS.md`
+- Build/runtime: `CMakeLists.txt`, `cmake/Dependencies.cmake`, `config/app.yaml`, `.env.example`, `compose.yaml`
+- C++ lifecycle/live: `cpp/src/pipeline.cpp`, `cpp/src/dispatcher.cpp`, `cpp/src/questdb_writer.cpp`, `cpp/src/zmq_publisher.cpp`, `cpp/src/live_protocol.cpp`
+- CTP: `cpp/include/market_data/ctp/`, `cpp/src/ctp/`, `cmake/FindCTP.cmake`, `docs/ctp.md`
+- Python live/API: `python/live/cache.py`, `python/live/subscriber.py`, `python/live/selection.py`, `python/api/app.py`, `python/api/settings.py`
+- AKShare: `python/providers/akshare/`, `docker/akshare.Dockerfile`, `docs/providers/akshare.md`
+- Storage: `sql/questdb/`, `sql/postgresql/`
+- Phase docs: `docs/phases/phase-09-multi-provider.md`, `docs/phases/phase-11b-akshare-intraday-and-realtime.md`, `docs/phases/phase-12-provider-selection.md`
+- Semantics: `docs/delivery-semantics.md`
 
 ## Build and test commands
 
-Build the C++ project without CTP:
+Default C++ build and full CTest:
 
 ```sh
 docker build -f docker/build.Dockerfile -t market-data-build .
-docker run --rm market-data-build sh -c 'ctest --test-dir build/dev --output-on-failure'
+docker run --rm market-data-build \
+  sh -c 'ctest --test-dir build/dev --output-on-failure'
 ```
 
-Build and test the Python 3.12 API:
+Host CTP-enabled build using the operator SDK:
 
 ```sh
-docker build -f docker/api.Dockerfile -t market-data-api .
-docker run --rm market-data-api pytest -q python/tests
+cmake -S . -B build/ctp \
+  -DENABLE_CTP=ON \
+  -DCTP_SDK_ROOT="$PWD/ctp_file"
+cmake --build build/ctp --target market_data_collector -j"$(nproc)"
+ctest --test-dir build/ctp --output-on-failure
 ```
 
-Start an isolated database stack when default ports may be occupied:
+Python/API full suite:
+
+```sh
+docker compose build api
+docker compose run --rm --no-deps api python -m pytest -q python/tests
+```
+
+AKShare image/config validation:
+
+```sh
+docker compose --profile akshare build akshare-worker akshare-quotes
+docker compose --profile akshare config -q
+```
+
+Isolated databases when normal ports are occupied:
 
 ```sh
 QDB_HTTP_PORT=19000 QDB_PG_PORT=18812 QDB_METRICS_PORT=19003 \
@@ -79,16 +114,13 @@ POSTGRES_PORT=15432 API_PORT=18000 \
 docker compose -p mdtest run --rm questdb-init
 ```
 
-Run QuestDB integration tests from the C++ build image:
+Supply `POSTGRES_TEST_DSN`, `QDB_TEST_HTTP`, and/or C++ `QDB_TEST_CONF` for external integration tests. Remove only the isolated stack afterward:
 
 ```sh
 docker run --rm --network mdtest_default \
   -e 'QDB_TEST_CONF=ws::addr=questdb:9000;sf_dir=/tmp/qwp-test;sender_id=integration;sender_pool_min=1;sender_pool_max=1;' \
-  market-data-build sh -c 'ctest --test-dir build/dev --output-on-failure'
-```
+  market-data-build \
+  sh -c 'ctest --test-dir build/dev --output-on-failure'
 
-Remove only the isolated test stack when finished:
-
-```sh
 docker compose -p mdtest down -v
 ```
