@@ -5,7 +5,7 @@ import re
 from typing import Literal
 from pydantic import BaseModel,Field,field_validator,model_validator
 
-SYMBOL_RE=re.compile(r"^[A-Z][A-Z0-9_]{1,15}\.[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")
+SYMBOL_RE=re.compile(r"^[A-Z][A-Z0-9_]{1,15}\.[A-Za-z0-9][A-Za-z0-9_-]{0,31}(?:\.(?:continuous|[1-9][0-9]*[dmy]|index|spot|cfd|synthetic))?$")
 
 def validate_symbol(value:str)->str:
     if not SYMBOL_RE.fullmatch(value):raise ValueError("symbol must use EXCHANGE.instrument form")
@@ -23,7 +23,7 @@ def _day(value:str)->str:
 
 class BookLevel(BaseModel):
     price:float
-    volume:int
+    volume:int|None
 
 class QuoteResponse(BaseModel):
     schema_version:int=2
@@ -41,9 +41,9 @@ class QuoteResponse(BaseModel):
     trading_day:str
     action_day:str
     last_price:float|None
-    volume:int
-    turnover:float
-    open_interest:float
+    volume:int|None
+    turnover:float|None
+    open_interest:float|None
     upper_limit_price:float|None=None
     lower_limit_price:float|None=None
     bid:list[BookLevel]
@@ -54,12 +54,16 @@ class QuoteResponse(BaseModel):
     selection_reason:str|None=None
     fallback:bool=False
     preferred_provider:str|None=None
+    provider_symbol:str|None=None
+    raw_provider_symbol:str|None=None
+    upstream_source:str|None=None
+    instrument_kind:str|None=None
 
 def quote_from_tick(tick:dict)->QuoteResponse:
     def price(value:float|None)->float|None:return value if value is not None and math.isfinite(value) else None
     bids=[BookLevel(price=p,volume=v) for p,v in zip(tick["bid_price"],tick["bid_volume"]) if price(p) is not None]
     asks=[BookLevel(price=p,volume=v) for p,v in zip(tick["ask_price"],tick["ask_volume"]) if price(p) is not None]
-    return QuoteResponse(provider=tick.get("provider","ctp"),event_type=tick.get("event_type","quote_snapshot"),instrument_id=tick.get("instrument_id",f'{tick["exchange"]}.{tick["instrument"]}'),quality=tick.get("quality","UNKNOWN"),symbol=f'{tick["exchange"]}.{tick["instrument"]}',exchange=tick["exchange"],instrument=tick["instrument"],event_ts=_timestamp(tick["event_ts"],1_000_000),recv_ts=_timestamp(tick["recv_ts"],1_000_000_000),producer_id=tick["producer_id"],seq=tick["seq"],trading_day=_day(tick["trading_day"]),action_day=_day(tick["action_day"]),last_price=price(tick["last_price"]),volume=tick["volume"] or 0,turnover=tick["turnover"] or 0,open_interest=tick["open_interest"] or 0,upper_limit_price=price(tick["upper_limit_price"]),lower_limit_price=price(tick["lower_limit_price"]),bid=bids,ask=asks,stale=tick.get("stale"),age_seconds=tick.get("age_seconds"),timestamp_source=tick.get("timestamp_source"),selection_reason=tick.get("selection_reason"),fallback=tick.get("fallback",False),preferred_provider=tick.get("preferred_provider"))
+    return QuoteResponse(provider=tick.get("provider","ctp"),event_type=tick.get("event_type","quote_snapshot"),instrument_id=tick.get("instrument_id",f'{tick["exchange"]}.{tick["instrument"]}'),quality=tick.get("quality","UNKNOWN"),symbol=f'{tick["exchange"]}.{tick["instrument"]}',exchange=tick["exchange"],instrument=tick["instrument"],event_ts=_timestamp(tick["event_ts"],1_000_000),recv_ts=_timestamp(tick["recv_ts"],1_000_000_000),producer_id=tick["producer_id"],seq=tick["seq"],trading_day=_day(tick["trading_day"]),action_day=_day(tick["action_day"]),last_price=price(tick["last_price"]),volume=tick["volume"],turnover=tick["turnover"],open_interest=tick["open_interest"],upper_limit_price=price(tick["upper_limit_price"]),lower_limit_price=price(tick["lower_limit_price"]),bid=bids,ask=asks,stale=tick.get("stale"),age_seconds=tick.get("age_seconds"),timestamp_source=tick.get("timestamp_source"),selection_reason=tick.get("selection_reason"),fallback=tick.get("fallback",False),preferred_provider=tick.get("preferred_provider"),provider_symbol=tick.get("provider_symbol"),raw_provider_symbol=tick.get("raw_provider_symbol"),upstream_source=tick.get("upstream_source"),instrument_kind=tick.get("instrument_kind"))
 
 class SubscriptionRequest(BaseModel):
     protocol_version:Literal[1]
@@ -96,6 +100,10 @@ class InstrumentResponse(BaseModel):
     currency:str
 
 class BarResponse(BaseModel):
+    raw_provider_symbol:str|None=None
+    instrument_kind:str|None=None
+    instrument_id:str|None=None
+    provider_symbol:str|None=None
     exchange:str
     instrument:str
     trading_day:str
@@ -105,10 +113,28 @@ class BarResponse(BaseModel):
     high:float
     low:float
     close:float
-    volume:int
+    volume:int|None
     open_interest:float|None
     snapshot_count:int|None=None
     provider:str|None=None
     source:str|None=None
     upstream_source:str|None=None
     settlement:float|None=None
+    quality:str|None=None
+    selection_reason:str|None=None
+
+class HistoricalEnsureBody(BaseModel):
+    instrument:str
+    interval:Literal["1m","5m","1h","1d"]
+    start:datetime
+    end:datetime
+    preferred_provider:str|None=None
+    reason:str="MISSING_HISTORY"
+    force:bool=False
+    @field_validator("instrument")
+    @classmethod
+    def instrument_valid(cls,value):return validate_symbol(value)
+    @model_validator(mode="after")
+    def range_valid(self):
+        if self.start>=self.end:raise ValueError("start must be before end")
+        return self

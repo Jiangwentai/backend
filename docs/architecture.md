@@ -51,3 +51,16 @@ V1 must run exactly one Uvicorn worker because cache, subscriptions, and metrics
 ## Live transport buffer configuration
 
 C++ PUB sets `SNDHWM` before bind from `live.sndhwm`, overridden by `ZMQ_SNDHWM`. FastAPI SUB sets `RCVHWM` before all endpoint connections from `ZMQ_RCVHWM`. Defaults remain 1000 messages per peer; both require 1..2147483647, excluding unbounded zero. PUB HWM loss can accompany a successful send and is not measurable by send failure counters. See [delivery semantics](delivery-semantics.md) for buffering and validation limits.
+
+
+## Shared instrument resolution
+
+Canonical identity and metadata registration are separate. The provider-independent `python/instruments` package resolves exact explicit mappings, normalized explicit mappings, and deterministic provider/exchange rules, then enriches metadata. Physical futures, provider continuous series, and rolling tenors retain distinct kinds; no delivery month is fabricated for LME 3M. AKShare historical and quote workers use this boundary, and quote association is by symbol identity. See [instrument rules and compatibility](instruments.md).
+
+Existing PostgreSQL mappings remain valid; typed aliases use existing provider/reference JSON metadata, without new PostgreSQL tables. QuestDB migrations 008–014 add nullable provenance fields and leave DEDUP keys unchanged. Historical canonical writes use full IDs; read compatibility accepts legacy local IDs. New Parquet archives use schema v3 and preserve provider/native/raw identity; existing completed archives remain immutable. The optional Python live writer preserves nanosecond receive time with the correct ILP field suffix. CTP callbacks and C++ data planes are unchanged.
+
+## Historical coverage and selection
+
+Historical provider observations remain independent in QuestDB. A read-side coverage engine generates expected timestamps from PostgreSQL exchange calendars and product sessions, then performs EXPLICIT, whole-range SINGLE, or bar-level COMPOSITE selection over one range query. Composite bars retain their actual provider and are never persisted. Existing archive and plain provider queries keep their legacy response shape; selection requests return coverage and provenance metadata. See [historical coverage](historical-data.md).
+
+Historical acquisition is an independent PostgreSQL-backed control plane. API and scheduled triggers enqueue deduplicated range requests; bounded provider workers claim them with `SKIP LOCKED` and invoke normal provider ingestion. Persistent provider/interval cooldown and failure-backoff state prevents chart refreshes or multiple workers from spraying upstream requests. GET remains local-only and never waits for acquisition.

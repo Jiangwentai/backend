@@ -2,5 +2,6 @@ import pyarrow as pa
 
 FIELDS=[("event_ts",pa.timestamp("us",tz="UTC")),("recv_ts",pa.timestamp("ns",tz="UTC")),("provider",pa.string()),("event_type",pa.string()),("instrument_id",pa.string()),("quality",pa.string()),("producer_id",pa.string()),("seq",pa.uint64()),("exchange",pa.string()),("instrument",pa.string()),("trading_day",pa.string()),("action_day",pa.string()),("last_price",pa.float64()),("volume",pa.int64()),("turnover",pa.float64()),("open_interest",pa.float64()),("upper_limit_price",pa.float64()),("lower_limit_price",pa.float64())]
 for level in range(1,6):FIELDS.extend([(f"bid_price{level}",pa.float64()),(f"bid_volume{level}",pa.int32()),(f"ask_price{level}",pa.float64()),(f"ask_volume{level}",pa.int32())])
-MARKET_DATA_SCHEMA=pa.schema(FIELDS,metadata={b"schema_version":b"2",b"source":b"ctp_market_data",b"event_type":b"quote_snapshot"})
+FIELDS.extend((name, pa.string()) for name in ("provider_symbol", "raw_provider_symbol", "instrument_kind", "source", "upstream_source"))
+MARKET_DATA_SCHEMA=pa.schema(FIELDS,metadata={b"schema_version":b"3",b"source":b"ctp_market_data",b"event_type":b"quote_snapshot"})
 COLUMN_NAMES=MARKET_DATA_SCHEMA.names

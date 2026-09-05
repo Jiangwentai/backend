@@ -38,12 +38,18 @@ class Module:
     def futures_zh_spot(self,symbol="RB2610",market="CF",adjust="0"):return Frame([
         {"symbol":"螺纹钢2610","time":"21:01:02","current_price":3500,"bid_price":3499,
          "ask_price":3501,"buy_vol":3,"sell_vol":4,"hold":7,"volume":5} for _ in symbol.split(",")])
+    def futures_foreign_hist(self,symbol="ZSD"):return Frame([
+        {"date":"2026-09-01","open":2800,"high":2820,"low":2790,"close":2810,"volume":5,"position":7,"s":0}])
+    def futures_global_hist_em(self,symbol="LZNT"):return Frame([
+        {"日期":"2026-09-01","代码":"LZNT","名称":"综合锌03","开盘":2801,"最新价":2811,
+         "最高":2821,"最低":2791,"总量":6,"涨幅":1.2,"持仓":8,"日增":1}])
 
 
-class Resolver:
-    async def resolve(self,symbol,exchange=None,as_of=None):
-        if symbol=="ZZ0":raise MappingError(symbol)
-        return exchange or "SHFE",f"{(exchange or 'SHFE')}.{symbol.lower()}"
+from instruments import ProviderInstrumentResolver
+from instruments.metadata import MemoryInstrumentMetadata
+
+class Resolver(ProviderInstrumentResolver):
+    def __init__(self): super().__init__(MemoryInstrumentMetadata())
 
 
 class Metadata:
@@ -99,6 +105,19 @@ async def test_daily_normalization_lineage_archive_and_duckdb(tmp_path):
     table=pq.read_table(raw);assert {"date","_fetch_id","_akshare_version","_request_parameters"}<=set(table.column_names)
     assert query_raw(tmp_path,dataset="futures_daily_sina").num_rows==1
     assert metadata.runs[batch.fetch_id]["status"]=="SUCCESS" and len(bars.values)==1
+
+
+@pytest.mark.asyncio
+async def test_sina_and_eastmoney_foreign_daily_coexist_with_semantic_columns(tmp_path):
+    service,_,bars=make_service(tmp_path)
+    sina,_,_=await service.ingest_bars(HistoricalBarRequest("ZSD",endpoint="futures_foreign_daily_sina",exchange="LME"))
+    eastmoney,_,_=await service.ingest_bars(HistoricalBarRequest("LZNT",endpoint="futures_foreign_daily_eastmoney",exchange="LME"))
+    assert sina.rows[0].instrument_id==eastmoney.rows[0].instrument_id=="LME.zn.3m"
+    assert sina.rows[0].provider_symbol=="ZSD" and sina.rows[0].upstream_source=="SINA"
+    assert eastmoney.rows[0].provider_symbol=="LZNT" and eastmoney.rows[0].upstream_source=="EASTMONEY"
+    assert (eastmoney.rows[0].open,eastmoney.rows[0].high,eastmoney.rows[0].low,eastmoney.rows[0].close)==(2801,2821,2791,2811)
+    assert len(bars.values)==2
+    assert Path(eastmoney.raw_archive,"raw.parquet").exists()
 
 
 @pytest.mark.asyncio

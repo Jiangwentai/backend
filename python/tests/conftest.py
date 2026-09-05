@@ -15,7 +15,9 @@ class FakeRepository:
     async def close(self):self.closed=True
 
 class FakeMetadataRepository:
-    def __init__(self,instruments=None,fail=False):self.instruments=instruments or [];self.fail=fail;self.started=False;self.closed=False;self.calls=[]
+    def __init__(self,instruments=None,fail=False,schedule=None,acquisition=None):
+        self.instruments=instruments or [];self.fail=fail;self.schedule=schedule;self.started=False;self.closed=False;self.calls=[]
+        if acquisition is not None:self.acquisition=acquisition
     async def start(self):
         if self.fail:raise RuntimeError("postgres unavailable")
         self.started=True
@@ -25,4 +27,8 @@ class FakeMetadataRepository:
     async def provider_health(self,provider):
         if self.fail:raise RuntimeError("postgres unavailable")
         return {"provider":provider.upper(),"state":"AVAILABLE","last_success":None,"recent_failures":0,"error_code":None,"error_message":None}
+    async def historical_schedule(self,*args):
+        if self.fail:raise RuntimeError("postgres unavailable")
+        if self.schedule is None:raise RuntimeError("no schedule fixture")
+        return copy.deepcopy(self.schedule)
     async def close(self):self.closed=True

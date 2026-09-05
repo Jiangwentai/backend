@@ -114,3 +114,14 @@ AKShare quote poller -> QuoteSnapshot(BEST_EFFORT) -> shared live ingress
 - AKShare operations: `python/providers/akshare/`, `docs/providers/akshare.md`
 - Phase 4 request: `/root/.codex/attachments/58d6cac8-029d-4e96-8c0f-1448068b98b2/pasted-text.txt`
 - Existing detailed docs: `docs/architecture.md`, `docs/delivery-semantics.md`
+
+
+## Shared instrument resolution
+
+Canonical identity and metadata registration are separate. The provider-independent `python/instruments` package resolves exact explicit mappings, normalized explicit mappings, and deterministic provider/exchange rules, then enriches metadata. Physical futures, provider continuous series, and rolling tenors retain distinct kinds; no delivery month is fabricated for LME 3M. AKShare historical and quote workers use this boundary, and quote association is by symbol identity. See [instrument rules and compatibility](docs/instruments.md).
+
+Existing PostgreSQL mappings remain valid; typed aliases use existing provider/reference JSON metadata, without new PostgreSQL tables. QuestDB migrations 008–015 add nullable provenance/quality fields and leave DEDUP keys unchanged. Historical canonical writes use full IDs; read compatibility accepts legacy local IDs. New Parquet archives use schema v3 and preserve provider/native/raw identity; existing completed archives remain immutable. The optional Python live writer preserves nanosecond receive time with the correct ILP field suffix. CTP callbacks and C++ data planes are unchanged.
+
+Historical coverage and cross-provider selection are read-side projections. Expected bars come from PostgreSQL calendars and product sessions; EXPLICIT and SINGLE never mix providers, while COMPOSITE selects whole observations per timestamp and retains actual provider provenance. Composite rows are not persisted.
+
+Scheduled/on-demand acquisition is a separate PostgreSQL-backed control plane. Triggers enqueue deduplicated range jobs; bounded workers claim with `SKIP LOCKED`, honor persistent provider cooldown/backoff and call existing ingestion adapters. GET never invokes provider network APIs.

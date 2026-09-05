@@ -20,11 +20,28 @@ class EndpointDefinition:
 
 
 ENDPOINTS = {
+    "futures_foreign_products": EndpointDefinition(
+        "futures_foreign_products", "futures_hq_subscribe_exchange_symbol", DatasetType.REFERENCE,
+        "SINA", "reference", EndpointStability.STABLE, True,
+        frozenset({"symbol", "code"}),
+    ),
     "futures_daily_sina": EndpointDefinition(
         "futures_daily_sina", "futures_zh_daily_sina", DatasetType.HISTORICAL_BARS,
         "SINA", "1d", EndpointStability.STABLE, True,
         frozenset({"date", "open", "high", "low", "close"}),
         frozenset({"volume", "hold", "settle"}),
+    ),
+    "futures_foreign_daily_sina": EndpointDefinition(
+        "futures_foreign_daily_sina", "futures_foreign_hist", DatasetType.HISTORICAL_BARS,
+        "SINA", "1d", EndpointStability.STABLE, True,
+        frozenset({"date", "open", "high", "low", "close"}),
+        frozenset({"volume", "position", "s"}),
+    ),
+    "futures_foreign_daily_eastmoney": EndpointDefinition(
+        "futures_foreign_daily_eastmoney", "futures_global_hist_em", DatasetType.HISTORICAL_BARS,
+        "EASTMONEY", "1d", EndpointStability.STABLE, True,
+        frozenset({"日期", "代码", "名称", "开盘", "最新价", "最高", "最低"}),
+        frozenset({"总量", "涨幅", "持仓", "日增"}),
     ),
     "futures_1m_sina": EndpointDefinition(
         "futures_1m_sina", "futures_zh_minute_sina", DatasetType.HISTORICAL_BARS,

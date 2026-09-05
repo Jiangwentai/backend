@@ -23,4 +23,4 @@ def render(metrics:ProviderMetrics)->str:
     for name,value in scalar.items():lines.append(f'akshare_{name} {value}')
     for metric,values in (("rows_received_total",metrics.rows_received_total),("rows_normalized_total",metrics.rows_normalized_total),("rows_rejected_total",metrics.rows_rejected_total)):
         for dataset,value in sorted(values.items()):lines.append(f'akshare_{metric}{{dataset="{dataset}"}} {value}')
-    return "\n".join(lines)+"\n"
+    return "\n".join(lines)+"\n"+metrics.instrument_resolution.render()

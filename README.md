@@ -15,6 +15,12 @@ C++20 persistence pipeline for provider-independent market snapshots. The implem
 
 The real CTP market-data adapter is optional and requires an operator-supplied SDK. No proprietary SDK files or credentials are stored here.
 
+## Instrument identity
+
+The shared `python/instruments` resolver separates canonical identity from metadata registration. It supports domestic contract normalization, explicit dated overrides, international month codes, provider continuous series, and LME rolling-tenor aliases. AKShare daily/1m/quote ingestion uses it; quote rows are matched by symbol rather than response order. See [instrument rules, CLI, and migration steps](docs/instruments.md). Apply QuestDB migrations 008–015 before upgrading API/worker/archive readers; PostgreSQL needs no migration. Migration 015 adds historical quality without changing DEDUP identity. New archive writes use schema v3 and preserve native identity provenance. Historical coverage and provider selection are documented in [historical data](docs/historical-data.md).
+
+Apply PostgreSQL migration `005_historical_acquisition.sql` before enabling on-demand or scheduled history acquisition. `POST /v1/history/ensure` only queues local work; the separate bounded worker performs provider calls. History GET requests never wait on AKShare.
+
 ## Build and test
 
 The reproducible builder includes CMake and Rust 1.91.1 (the minimum required by the pinned official QuestDB C/C++ client):
@@ -103,7 +109,7 @@ The canonical model distinguishes quote snapshots, trades, bid/ask ticks, depth 
 
 ## Phase 11/11B AKShare workers
 
-AKShare 1.18.74 is an optional Python dependency used by dedicated workers. It supports Sina futures daily/1-minute bars, 九期网 contract/fee reference records, and opt-in Sina quote snapshots. Raw historical responses are written immutably before normalization; symbols require PostgreSQL `provider_instruments` mappings; canonical bars are idempotent and revisions are audited.
+AKShare 1.18.74 is an optional Python dependency used by dedicated workers. It supports Sina futures daily/1-minute bars, 九期网 contract/fee reference records, and opt-in Sina quote snapshots. Raw historical responses are written immutably before normalization; explicit provider mappings take priority, while ordinary contracts resolve deterministically without metadata pre-registration; canonical bars are idempotent and revisions are audited.
 
 ```sh
 docker compose --profile akshare build akshare-worker

@@ -1,0 +1,12 @@
+from enum import StrEnum
+
+
+class InstrumentKind(StrEnum):
+    PHYSICAL_FUTURE = "PHYSICAL_FUTURE"
+    CONTINUOUS_FUTURE = "CONTINUOUS_FUTURE"
+    ROLLING_TENOR = "ROLLING_TENOR"
+    INDEX = "INDEX"
+    SPOT = "SPOT"
+    CFD = "CFD"
+    SYNTHETIC = "SYNTHETIC"
+    UNKNOWN = "UNKNOWN"

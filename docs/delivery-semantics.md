@@ -30,3 +30,10 @@ Historical bars are logically idempotent on `(provider, instrument_id, interval,
 Realtime transport is at least once. A producer keeps one `producer_id` for its process and assigns monotonically increasing `seq`; a retry retains that identity. Two separate polls with identical market fields are still separate feed observations and receive separate sequence numbers. AKShare snapshot differences never create synthetic trades.
 
 Provider arbitration is a read-side projection over the latest independent observations. It does not create a new market event and therefore does not receive a producer identity or enter persistence. Explicit queries always preserve the requested source. Configured failover is reported to the caller and counted; it never erases the unavailable or stale primary observation.
+
+
+## Shared instrument resolution
+
+Canonical identity and metadata registration are separate. The provider-independent `python/instruments` package resolves exact explicit mappings, normalized explicit mappings, and deterministic provider/exchange rules, then enriches metadata. Physical futures, provider continuous series, and rolling tenors retain distinct kinds; no delivery month is fabricated for LME 3M. AKShare historical and quote workers use this boundary, and quote association is by symbol identity. See [instrument rules and compatibility](instruments.md).
+
+Existing PostgreSQL mappings remain valid; typed aliases use existing provider/reference JSON metadata, without new PostgreSQL tables. QuestDB migrations 008–014 add nullable provenance fields and leave DEDUP keys unchanged. Historical canonical writes use full IDs; read compatibility accepts legacy local IDs. New Parquet archives use schema v3 and preserve provider/native/raw identity; existing completed archives remain immutable. The optional Python live writer preserves nanosecond receive time with the correct ILP field suffix. CTP callbacks and C++ data planes are unchanged.

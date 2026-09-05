@@ -8,7 +8,7 @@ import re
 import duckdb
 import pyarrow as pa
 
-SAFE_COMPONENT = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+SAFE_COMPONENT = re.compile(r"^[A-Za-z0-9_-]{1,32}(?:\.(?:continuous|[1-9][0-9]*[dmy]|index|spot|cfd|synthetic))?$")
 SUPPORTED_INTERVALS = {
     "1m": "1 minute",
     "5m": "5 minutes",

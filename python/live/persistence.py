@@ -21,8 +21,11 @@ class QuestDbLivePersistence:
     async def publish(self,event:dict)->None:
         tags=",".join(f"{name}={_tag(event[name])}" for name in
             ("provider","event_type","instrument_id","quality","producer_id","exchange","instrument"))
-        fields=[f"recv_ts={event['recv_ts']}t",f"seq={event['seq']}i",
+        fields=[f"recv_ts={event['recv_ts']}n",f"seq={event['seq']}i",
             f"trading_day={_string(event['trading_day'])}",f"action_day={_string(event['action_day'])}"]
+        for name in ("provider_symbol", "raw_provider_symbol", "instrument_kind", "source", "upstream_source"):
+            if event.get(name) is not None:
+                fields.append(f"{name}={_string(event[name])}")
         for name in ("last_price","turnover","open_interest","upper_limit_price","lower_limit_price"):
             value=event.get(name)
             if value is not None and math.isfinite(value):fields.append(f"{name}={value}")

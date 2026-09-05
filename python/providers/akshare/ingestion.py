@@ -13,12 +13,14 @@ class AkshareIngestionService:
     async def ingest_bars(self, request: HistoricalBarRequest):
         definition=endpoint(request.endpoint);fetch_id=str(uuid.uuid4());metrics=self.provider.client.metrics
         await self.metadata.begin_run(fetch_id,definition.name,definition.function_name,
-                                      {"symbol":request.provider_symbol},self.provider.client.version)
+                                      {"symbol":request.provider_symbol,"trigger":request.trigger,
+                                       "acquisition_request_id":request.acquisition_request_id},self.provider.client.version)
         metrics.ingestion_runs_total += 1
         try:
             batch = await self.provider.fetch_bars(request,fetch_id=fetch_id)
             for symbol in batch.unresolved_symbols:
-                await self.metadata.unresolved(batch.fetch_id, request.provider_symbol, symbol, batch.endpoint)
+                await self.metadata.unresolved(batch.fetch_id, request.provider_symbol, symbol, batch.endpoint,
+                                               batch.lineage.get("instrument_resolution"))
             if batch.unresolved_symbols:
                 await self.metadata.finish_run(batch.fetch_id,status="PARTIAL",received=batch.rows_received,
                     normalized=0,rejected=batch.rows_rejected,written=0)

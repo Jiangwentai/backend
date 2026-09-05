@@ -12,11 +12,12 @@ from ..registry import EndpointDefinition
 
 
 def normalize_symbol(value: str) -> str:
-    symbol = re.sub(r"\s+", "", value).upper()
-    symbol = re.sub(r"\.(SHFE|DCE|CZCE|CFFEX|GFEX|INE)$", "", symbol)
-    if not re.fullmatch(r"[A-Z]{1,4}[0-9]{1,4}", symbol):
-        raise ValidationError(f"invalid AKShare futures symbol: {value}")
-    return symbol
+    # Comparison/provenance only; identity validation belongs to the resolver.
+    from instruments.normalization import provider_symbol_key
+    try:
+        return provider_symbol_key("akshare", value)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
 
 
 def _nullable_float(value: Any) -> float | None:
@@ -73,4 +74,24 @@ def normalize_futures_daily(rows: list[dict[str, Any]], *, definition: EndpointD
             _nullable_int(row.get("hold")), None, _nullable_float(row.get("settle")),
             fetched_at, definition.function_name, definition.upstream_source, fetch_id,
         ))
+    return tuple(result)
+
+
+def normalize_eastmoney_foreign_daily(rows: list[dict[str, Any]], *, definition: EndpointDefinition,
+                                      raw_symbol: str, exchange: str, instrument_id: str,
+                                      fetch_id: str, fetched_at: datetime) -> tuple[HistoricalBar, ...]:
+    validate_schema(rows,definition);result=[];seen=set()
+    for row in rows:
+        trading_day=_date(row["日期"])
+        if trading_day in seen:raise SchemaError(f"duplicate trading day: {trading_day}")
+        seen.add(trading_day)
+        open_,close,high,low=(_nullable_float(row.get(name)) for name in ("开盘","最新价","最高","最低"))
+        if high is not None and low is not None and high<low:raise ValidationError("bar high is below low")
+        if high is not None and low is not None:
+            if open_ is not None and not low<=open_<=high:raise ValidationError("bar open outside range")
+            if close is not None and not low<=close<=high:raise ValidationError("bar close outside range")
+        result.append(HistoricalBar(ProviderId.AKSHARE,instrument_id,exchange.upper(),raw_symbol,raw_symbol,"1d",
+          datetime.combine(trading_day,time(),ZoneInfo("Asia/Shanghai")).astimezone(timezone.utc),trading_day,
+          open_,high,low,close,_nullable_int(row.get("总量")),_nullable_int(row.get("持仓")),None,None,
+          fetched_at,definition.function_name,definition.upstream_source,fetch_id))
     return tuple(result)

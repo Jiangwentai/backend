@@ -1,3 +1,5 @@
+Task 3 historical acquisition coordination is complete (2026-09-06). It adds scheduled and on-demand queued acquisition with persistent deduplication, cooldown/backoff, bounded provider concurrency, and local-only reads. It does not implement later phases.
+
 Phase 11B — AKShare Intraday Bars and Best-Effort Realtime Quotes
 
 Implementation status: complete (2026-09-05). Internet-dependent endpoint smoke tests remain operator-run; CI uses deterministic fakes.
@@ -258,99 +260,13 @@ upstream_source
 
 into one field.
 
-7. Symbol Mapping
+7. Symbol Mapping (updated by instrument resolution maintenance)
 
-All AKShare requests MUST resolve canonical instruments through PostgreSQL provider_instruments.
+Explicit provider mappings take precedence. Ordinary physical contracts may be canonicalized deterministically from provider/exchange rules without a pre-existing mapping or physical-contract metadata row. Unknown or ambiguous identities still fail visibly. See `docs/instruments.md`.
 
-Example:
+8. Product and Contract Preconditions (updated)
 
-
-
-canonical:
-
-SHFE.rb2610
-
-
-
-↓
-
-
-
-provider_instruments
-
-
-
-↓
-
-
-
-provider = akshare
-
-provider_symbol = RB2610
-
-The AKShare adapter MUST NOT silently derive:
-
-
-
-rb2610 → RB2610
-
-when no mapping exists.
-
-Unknown mappings MUST:
-
-
-
-be rejected or marked unresolved;
-
-increment a mapping-error metric;
-
-appear in ingestion diagnostics;
-
-not create implicit canonical instruments.
-
-8. Product and Contract Preconditions
-
-A canonical futures contract MUST already exist before an AKShare mapping is accepted.
-
-Required relationship:
-
-
-
-exchanges
-
-↓
-
-products
-
-↓
-
-futures_contracts
-
-↓
-
-provider_instruments
-
-For example:
-
-
-
-SHFE
-
-↓
-
-rb
-
-↓
-
-rb2610
-
-↓
-
-AKShare RB2610
-
-Phase 11B MAY consume the contract synchronization capability created in earlier phases.
-
-It MUST NOT bypass foreign-key constraints or create orphan mappings.
+Identity recognition and metadata registration are separate. Existing `provider_instruments` foreign keys remain intact. Administrative aliases for unregistered physical or nonphysical instruments use existing `providers.metadata`; ordinary recognition performs no registration. Never invent physical delivery months for rolling or continuous products.
 
 9. AKShare Client Abstraction
 
@@ -1440,11 +1356,7 @@ market_data_kind = QUOTE
 
 }
 
-It MUST resolve provider-native symbols using:
-
-
-
-provider_instruments
+It MUST resolve provider-native symbols using explicit provider mappings first, followed by deterministic provider formatters.
 
 46. Realtime Normalization
 
@@ -2748,7 +2660,7 @@ Historical ingestion uses the common historical repository/storage service.
 
 Realtime quotes use the common realtime ingress.
 
-Canonical instrument mappings come from provider mappings.
+Canonical identity comes from explicit mappings first, then vetted deterministic provider/exchange rules.
 
 Unknown symbols are never silently guessed.
 
@@ -2810,7 +2722,7 @@ futures 1-minute endpoint adapter exists.
 
 canonical instrument → provider symbol mapping is used.
 
-missing mappings fail visibly.
+unresolved or ambiguous identities fail visibly; an ordinary deterministic contract does not require a mapping row.
 
 canonical interval is 1m.
 
@@ -3491,3 +3403,8 @@ Phase 12 introduces a provider-neutral read-side selection layer over the provid
 The default is `explicit`, so multiple providers still require `provider=`. Failover is disabled unless `PROVIDER_FALLBACK_ENABLED=true`. Selection must not mutate cached observations, average prices, synthesize events, change persistence identity, call provider SDKs, or run on native callback threads. Explicit provider queries always return that provider's observation, including its stale status. `/v1/provider-selection/{symbol}` exposes the inputs and decision for operators.
 
 Phase 12 is complete when policy decisions are deterministic and tested, stale/unavailable primaries fail over only under explicit configuration, AKShare quality remains lower than authoritative realtime feeds, discrepancies are observable without automatic price merging, and all earlier regression suites pass.
+
+
+## Instrument resolution maintenance — implemented
+
+Implemented the explicitly requested `currentTASK.MD` instrument identity work; this does not infer a numbered Phase 13. Shared parsing/formatting, kinds, metadata independence, explicit override/ambiguity diagnostics, AKShare symbol joins, CLI administration, foreign reference sync, provenance persistence and schema-v3 archives are documented in `docs/instruments.md`. Foreign price ingestion, arbitrary front-month selection and automatic instrument registration remain outside this task.

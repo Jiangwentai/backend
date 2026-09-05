@@ -46,3 +46,12 @@ See [AKShare historical/reference provider](providers/akshare.md) for endpoints,
 `PROVIDER_SELECTION_MODE=explicit` is the safe default: multiple observations require an explicit `provider=` query. `preferred` walks `PROVIDER_PREFERENCE`; `ranked` first compares declared quality and then provider preference. Both reject stale observations unless `PROVIDER_ALLOW_STALE=true`. Moving away from the first preferred provider additionally requires `PROVIDER_FALLBACK_ENABLED=true`. Responses identify `selection_reason`, `preferred_provider`, and `fallback`; no hidden fallback is permitted.
 
 `GET /v1/provider-selection/{symbol}` reports current provider observations, age/staleness, selected provider, and maximum price discrepancy in basis points. It is diagnostic only: the system does not average prices or alter upstream events.
+
+Historical selection is a separate read-side policy. Provider priorities and quality are configured independently from realtime selection. SINGLE keeps one provider for an entire range; COMPOSITE falls back only at complete-bar boundaries and preserves source provenance. See [historical coverage](historical-data.md).
+
+
+## Shared instrument resolution
+
+Canonical identity and metadata registration are separate. The provider-independent `python/instruments` package resolves exact explicit mappings, normalized explicit mappings, and deterministic provider/exchange rules, then enriches metadata. Physical futures, provider continuous series, and rolling tenors retain distinct kinds; no delivery month is fabricated for LME 3M. AKShare historical and quote workers use this boundary, and quote association is by symbol identity. See [instrument rules and compatibility](instruments.md).
+
+Existing PostgreSQL mappings remain valid; typed aliases use existing provider/reference JSON metadata, without new PostgreSQL tables. QuestDB migrations 008–014 add nullable provenance fields and leave DEDUP keys unchanged. Historical canonical writes use full IDs; read compatibility accepts legacy local IDs. New Parquet archives use schema v3 and preserve provider/native/raw identity; existing completed archives remain immutable. The optional Python live writer preserves nanosecond receive time with the correct ILP field suffix. CTP callbacks and C++ data planes are unchanged.

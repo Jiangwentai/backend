@@ -3,10 +3,12 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 import time
+from instruments.metrics import ResolutionMetrics
 
 
 @dataclass
 class ProviderMetrics:
+    instrument_resolution: ResolutionMetrics = field(default_factory=ResolutionMetrics)
     requests_total: int = 0
     requests_failed_total: int = 0
     request_latency_seconds: float = 0.0

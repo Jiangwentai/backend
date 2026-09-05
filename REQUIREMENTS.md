@@ -28,6 +28,10 @@ Future providers may include: LME, CME, FRED, SEC, Binance, IBKR, Chinese exchan
 
 AKShare is an implemented optional supplemental provider. It supplies persisted daily/1-minute historical bars and opt-in polled quote snapshots. AKShare snapshots must remain `BEST_EFFORT`, must not synthesize trades or depth, and must enter the provider-independent live ingress outside FastAPI and native provider callbacks. Provider fallback is disabled by default and may only occur under an explicit Phase 12 policy; every selected fallback must be visible in the API response and metrics.
 
+Historical provider observations remain independent. Range coverage must be calculated against canonical exchange calendars and sessions. EXPLICIT/SINGLE/COMPOSITE historical selection is read-side only: it must not average or field-merge observations, fabricate missing bars, remove provider provenance, or persist composite output.
+
+Historical acquisition must remain separate from GET reads. Scheduled and on-demand triggers enqueue bounded, deduplicated work subject to provider capability, cooldown, concurrency and failure backoff. Provider workers must retain raw archive and normal ingestion semantics; historical providers must not be continuously polled by default.
+
 The system is intended for: personal quantitative research, futures market analysis, historical data analysis, backtesting, market monitoring, and future live-strategy infrastructure.
 
 The architecture must prioritize: correctness, data integrity, no silent data loss, low latency, raw-data preservation, observability, clear module boundaries, reproducibility, maintainability, and future extensibility.
@@ -650,3 +654,7 @@ Before writing: Inspect repo, produce plan, list files, identify conflicts.
 ```
 
 ```
+
+## Instrument resolution maintenance
+
+Canonical physical futures identity MUST NOT depend on local metadata pre-registration when deterministic provider/exchange rules are sufficient. Explicit provider mappings MUST override deterministic parsing; normalized ambiguity and parser conflicts MUST be observable. Deterministic provider case/format drift MUST retain canonical identity. Physical, continuous, rolling-tenor, CFD, synthetic, index, spot and unknown instruments remain distinct. A provider product symbol MUST NOT silently become a delivery-month contract. Quote identity MUST be established from response symbols, never positional association. Missing metadata and optional observations remain NULL. Resolver operations MUST NOT change CTP callback behavior, provider selection, or either DEDUP key. See `docs/instruments.md` for supported rules and compatibility.

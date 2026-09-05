@@ -1,6 +1,8 @@
 from __future__ import annotations
 import asyncio
 import time
+import uuid
+from datetime import date,datetime,timedelta,timezone
 from contextlib import asynccontextmanager
 from typing import Any
 from fastapi import FastAPI,HTTPException,Query,Request,WebSocket,WebSocketDisconnect
@@ -10,10 +12,16 @@ from pydantic import ValidationError
 from live.cache import LatestQuoteCache
 from live.subscriber import LiveSubscriber
 from live.selection import ProviderSelector,SelectionPolicy
+from historical import (ExpectedBarGenerator, HistoricalIncompleteError,
+                        HistoricalProviderPolicy, HistoricalQuality,
+                        HistoricalSelector, SelectionMode, HistoricalEnsureRequest,
+                        HistoricalFetchCoordinator, HistoricalRefreshPolicy,
+                        AcquisitionMode)
+from historical.config import parse_refresh_policies
 from .health import calculate_health
 from .metrics import ApiMetrics,render_metrics
 from research import load_bars
-from .models import BarResponse,HealthResponse,InstrumentResponse,QuoteResponse,SubscriptionRequest,quote_from_tick,validate_symbol
+from .models import BarResponse,HealthResponse,HistoricalEnsureBody,InstrumentResponse,QuoteResponse,SubscriptionRequest,quote_from_tick,validate_symbol
 from .postgres_repository import PostgresMetadataRepository
 from .questdb_repository import QuestDBQuoteRepository
 from .recovery import reconcile_recovery
@@ -22,6 +30,11 @@ from .websocket_manager import WebSocketManager
 
 def create_app(*,settings:Settings|None=None,repository:Any|None=None,metadata_repository:Any|None=None,bar_loader:Any=load_bars,start_subscriber:bool=True)->FastAPI:
     config=settings or Settings.from_env()
+    policies=[]
+    for item in config.historical_provider_policy.split(","):
+        provider_name,priority,quality=item.strip().split(":")
+        policies.append(HistoricalProviderPolicy(provider_name.upper(),int(priority),HistoricalQuality(quality.upper())))
+    refresh_policies=parse_refresh_policies(config.historical_refresh_policy)
     @asynccontextmanager
     async def lifespan(app:FastAPI):
         cache=LatestQuoteCache({"akshare":config.akshare_quote_stale_after_seconds});manager=WebSocketManager(config.websocket_queue_capacity)
@@ -34,6 +47,9 @@ def create_app(*,settings:Settings|None=None,repository:Any|None=None,metadata_r
           freshness_seconds=(("ctp",config.live_stale_after_seconds),("ibkr",config.live_stale_after_seconds),
             ("synthetic",config.live_stale_after_seconds),("akshare",config.akshare_quote_stale_after_seconds))))
         app.state.cache=cache;app.state.selector=selector;app.state.websocket_manager=manager;app.state.repository=repo;app.state.metadata_repository=metadata;app.state.subscriber=subscriber
+        app.state.historical_selector=HistoricalSelector(tuple(policies),config.historical_minimum_coverage)
+        app.state.fetch_coordinator=(HistoricalFetchCoordinator(metadata.acquisition,repo,metadata,tuple(refresh_policies),
+          acquisition_fallback=config.historical_acquisition_fallback) if hasattr(metadata,"acquisition") else None)
         app.state.ready=False;app.state.questdb_healthy=None;app.state.postgres_healthy=None;subscriber_task=None
         try:
             if start_subscriber:
@@ -125,17 +141,79 @@ def create_app(*,settings:Settings|None=None,repository:Any|None=None,metadata_r
     async def quotes():
         snapshot=await app.state.cache.snapshot();return [quote_from_tick(tick) for _,tick in sorted(snapshot.items())]
 
-    @app.get("/v1/bars/{symbol}",response_model=list[BarResponse])
-    async def bars(symbol:str,interval:str=Query("1m",pattern=r"^(1m|5m|1h|1d)$"),start_day:str|None=Query(None,pattern=r"^[0-9]{8}$"),end_day:str|None=Query(None,pattern=r"^[0-9]{8}$"),provider:str|None=Query(None,pattern=r"^akshare$")):
+    async def selected_history(symbol,interval,start_day,end_day,provider,selection,require_complete):
+        exchange,instrument=symbol.split(".",1)
+        if not start_day or not end_day:raise HTTPException(422,"start_day and end_day are required for coverage selection")
+        first=date.fromisoformat(f"{start_day[:4]}-{start_day[4:6]}-{start_day[6:]}")
+        last=date.fromisoformat(f"{end_day[:4]}-{end_day[4:6]}-{end_day[6:]}")
+        if first>last:raise HTTPException(422,"start_day must not follow end_day")
+        start=datetime.combine(first,datetime.min.time(),timezone.utc)-timedelta(hours=8)
+        end=datetime.combine(last+timedelta(days=1),datetime.min.time(),timezone.utc)-timedelta(hours=8)
+        try:schedule=await app.state.metadata_repository.historical_schedule(exchange,symbol,first,last)
+        except Exception as exc:raise HTTPException(503,"historical calendar metadata unavailable") from exc
+        if not schedule["calendar"] or (interval != "1d" and not schedule["sessions"]):
+            raise HTTPException(409,{"code":"HISTORICAL_SCHEDULE_UNKNOWN",
+                                     "instrument_id":symbol,"start_day":start_day,"end_day":end_day})
+        expected=ExpectedBarGenerator().generate(interval,start,end,schedule["calendar"],schedule["sessions"])
+        observations=await app.state.repository.load_historical_bars(exchange,instrument,interval,start_day,end_day,None)
+        mode=SelectionMode.EXPLICIT if provider else SelectionMode(selection.upper())
+        try:
+            return app.state.historical_selector.select(mode,symbol,interval,start,end,expected,observations,
+                                                        provider=provider,require_complete=require_complete)
+        except HistoricalIncompleteError as exc:
+            app.state.api_metrics.historical_incomplete_queries_total+=1
+            raise HTTPException(409,{"code":"HISTORICAL_INCOMPLETE",**exc.details}) from exc
+
+    @app.get("/v1/bars/{symbol}")
+    async def bars(symbol:str,interval:str=Query("1m",pattern=r"^(1m|5m|1h|1d)$"),start_day:str|None=Query(None,pattern=r"^[0-9]{8}$"),end_day:str|None=Query(None,pattern=r"^[0-9]{8}$"),provider:str|None=Query(None,pattern=r"^[A-Za-z][A-Za-z0-9_-]{1,31}$"),selection:str|None=Query(None,pattern=r"^(single|composite)$"),require_complete:bool=False):
         try:validate_symbol(symbol)
         except ValueError as exc:raise HTTPException(422,str(exc)) from exc
         exchange,instrument=symbol.split(".",1)
         try:
-            if provider:return await app.state.repository.load_historical_bars(exchange,instrument,interval,start_day,end_day,provider)
+            if provider and selection is None and not require_complete:
+                return await app.state.repository.load_historical_bars(exchange,instrument,interval,start_day,end_day,provider)
+            if provider or selection:
+                app.state.api_metrics.historical_query_total+=1
+                result=await selected_history(symbol,interval,start_day,end_day,provider,selection or "single",require_complete)
+                app.state.api_metrics.historical_selection_total+=1
+                if not result["bars"]:app.state.api_metrics.historical_selection_no_data_total+=1
+                app.state.api_metrics.historical_composite_fallback_total+=sum(
+                    bar.get("selection_reason")=="FALLBACK" for bar in result["bars"])
+                return result
             table=await run_in_threadpool(bar_loader,config.archive_root,exchange,instrument,interval,start_day=start_day,end_day=end_day)
             return table.to_pylist()
         except FileNotFoundError as exc:raise HTTPException(404,"archive not found") from exc
         except ValueError as exc:raise HTTPException(422,str(exc)) from exc
+
+    @app.get("/v1/historical-coverage")
+    async def historical_coverage(instrument:str,interval:str=Query("1m",pattern=r"^(1m|5m|1h|1d)$"),start_day:str=Query(pattern=r"^[0-9]{8}$"),end_day:str=Query(pattern=r"^[0-9]{8}$"),provider:str|None=Query(None,pattern=r"^[A-Za-z][A-Za-z0-9_-]{1,31}$")):
+        try:validate_symbol(instrument)
+        except ValueError as exc:raise HTTPException(422,str(exc)) from exc
+        app.state.api_metrics.historical_coverage_queries_total+=1
+        result=await selected_history(instrument,interval,start_day,end_day,provider,"single",False)
+        return {"instrument_id":instrument,"interval":interval,"providers":result["providers"]}
+
+    @app.post("/v1/history/ensure",status_code=202)
+    async def ensure_history(body:HistoricalEnsureBody):
+        coordinator=app.state.fetch_coordinator
+        if coordinator is None:raise HTTPException(503,"historical acquisition queue unavailable")
+        result=await coordinator.ensure_history(HistoricalEnsureRequest(body.instrument,body.interval,
+          body.start,body.end,body.preferred_provider,body.reason,body.force,AcquisitionMode.ON_DEMAND))
+        app.state.api_metrics.historical_fetch_requests_total+=1
+        if result.status in {"ALREADY_RUNNING"}:app.state.api_metrics.historical_fetch_deduplicated_total+=1
+        if result.status=="COOLDOWN":app.state.api_metrics.historical_fetch_cooldown_total+=1
+        if result.status=="ALREADY_COMPLETE":app.state.api_metrics.historical_fetch_skipped_complete_total+=1
+        return result
+
+    @app.get("/v1/history/requests/{request_id}")
+    async def history_request_status(request_id:str):
+        try:uuid.UUID(request_id)
+        except ValueError as exc:raise HTTPException(422,"invalid request id") from exc
+        coordinator=app.state.fetch_coordinator
+        if coordinator is None:raise HTTPException(503,"historical acquisition queue unavailable")
+        value=await coordinator.queue.status(request_id)
+        if value is None:raise HTTPException(404,"historical fetch request not found")
+        return value
 
     @app.websocket("/v1/stream/quotes")
     async def quote_stream(websocket:WebSocket):

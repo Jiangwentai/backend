@@ -25,3 +25,12 @@ Errors are duplicate/missing stable identity, malformed trading day, negative cu
 Cumulative-volume decreases within one trading day and crossed best bid/ask are warnings. Operators should investigate them, but the checker does not mutate raw history because provider feed anomalies and session behavior must remain observable.
 
 Quality checks first re-run each Phase 6 manifest/readability verification, then aggregate checks in DuckDB. Run them only on closed partitions. Preserve the JSON report with the archive job record before applying any separate QuestDB retention operation.
+# Historical acquisition
+
+Run one bounded queue worker with the AKShare profile using the
+`historical-fetch-worker` service. The `akshare-worker` service performs only the configured
+low-frequency scheduled enqueue cycle. Monitor queued/running/failed rows in
+`historical_fetch_requests` and provider cooldown/backoff in
+`historical_provider_refresh_state`. Rate-limit, schema, mapping, empty response and
+unsupported-range failures are recorded separately. No job requires Redis, Kafka, or an
+unbounded task pool.

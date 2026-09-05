@@ -8,6 +8,9 @@ from typing import Any, Protocol
 import asyncpg
 import httpx
 
+from instruments import ProviderInstrumentResolver
+from instruments.postgres import PostgresInstrumentMetadata
+
 from .errors import MappingError
 from .models import HistoricalBar, ReferenceRecord
 
@@ -22,35 +25,36 @@ class HistoricalBarRepository(Protocol):
 
 
 class AkshareMetadataRepository:
-    def __init__(self, dsn: str): self.dsn = dsn; self.pool: asyncpg.Pool | None = None
+    def __init__(self, dsn: str):
+        self.dsn = dsn
+        self.pool: asyncpg.Pool | None = None
+        self.instrument_metadata = PostgresInstrumentMetadata(self._ready)
+        self.instrument_resolver = ProviderInstrumentResolver(self.instrument_metadata)
     async def start(self) -> None:
         if self.pool is None: self.pool = await asyncpg.create_pool(self.dsn, min_size=1, max_size=4)
     def _ready(self):
         if self.pool is None: raise RuntimeError("AKShare PostgreSQL repository is not started")
         return self.pool
 
-    async def resolve(self, provider_symbol: str, exchange: str | None = None, as_of=None) -> tuple[str, str]:
-        row = await self._ready().fetchrow("""
-            SELECT exchange_code,instrument_id FROM provider_instruments
-            WHERE provider_code='akshare' AND upper(provider_symbol)=upper($1)
-              AND ($2::text IS NULL OR exchange_code=$2)
-              AND ($3::date IS NULL OR valid_from IS NULL OR valid_from<=$3)
-              AND ($3::date IS NULL OR valid_to IS NULL OR valid_to>=$3)
-            ORDER BY valid_from DESC NULLS LAST LIMIT 1
-        """, provider_symbol, exchange.upper() if exchange else None, as_of)
-        if not row: raise MappingError(f"unresolved AKShare symbol: {provider_symbol}")
-        return row["exchange_code"], row["instrument_id"]
+    async def resolve_provider_instrument(self, provider_symbol: str, exchange: str | None = None, as_of=None, provider_source=None):
+        return await self.instrument_resolver.resolve_raw("akshare", provider_symbol, exchange_hint=exchange, as_of=as_of,
+                                                          provider_source=provider_source)
 
-    async def provider_symbol(self, instrument_id: str) -> tuple[str, str, str]:
-        exchange, separator, instrument = instrument_id.partition(".")
-        if not separator:
-            raise MappingError(f"canonical instrument must use EXCHANGE.instrument form: {instrument_id}")
-        row = await self._ready().fetchrow("""SELECT exchange_code,instrument_id,provider_symbol
-          FROM provider_instruments WHERE provider_code='akshare' AND exchange_code=$1 AND instrument_id=$2
-          AND (valid_from IS NULL OR valid_from<=CURRENT_DATE) AND (valid_to IS NULL OR valid_to>=CURRENT_DATE)
-          ORDER BY valid_from DESC NULLS LAST LIMIT 1""", exchange.upper(), instrument)
-        if not row: raise MappingError(f"unresolved AKShare mapping: {instrument_id}")
-        return row["exchange_code"], row["instrument_id"], row["provider_symbol"]
+    async def resolve(self, provider_symbol: str, exchange: str | None = None, as_of=None) -> tuple[str, str]:
+        """Compatibility wrapper returning the legacy (exchange, local code) tuple."""
+        result = await self.resolve_provider_instrument(provider_symbol, exchange, as_of)
+        if not result.resolved:
+            raise MappingError(f"{result.reason}: {provider_symbol}")
+        return result.exchange, result.canonical_instrument.partition(".")[2]
+
+    async def provider_symbol(self, instrument_id: str, as_of=None, provider_source=None) -> tuple[str, str, str]:
+        """Compatibility wrapper over explicit mapping then deterministic formatter."""
+        result = await self.instrument_resolver.format_provider_symbol("akshare", instrument_id, as_of=as_of,
+                                                                        provider_source=provider_source)
+        if not result.resolved:
+            raise MappingError(f"{result.reason}: {instrument_id}")
+        exchange, _, instrument = result.canonical_instrument.partition(".")
+        return exchange, instrument, result.provider_symbol
 
     async def begin_run(self, fetch_id: str, dataset: str, endpoint: str, parameters: dict[str, Any], version: str) -> None:
         await self._ready().execute("""INSERT INTO provider_ingestion_runs
@@ -65,15 +69,15 @@ class AkshareMetadataRepository:
           error_code=$7,error_message=$8 WHERE id=$1""", fetch_id, status, received,
           normalized, rejected, written, type(error).__name__ if error else None, str(error)[:2000] if error else None)
 
-    async def unresolved(self, fetch_id: str, raw_symbol: str, normalized_symbol: str, endpoint: str) -> None:
+    async def unresolved(self, fetch_id: str, raw_symbol: str, normalized_symbol: str, endpoint: str, diagnostics=None) -> None:
         await self._ready().execute("""INSERT INTO provider_unresolved_instruments
-          (provider_code,fetch_id,endpoint,raw_provider_symbol,normalized_provider_symbol)
-          VALUES('akshare',$1,$2,$3,$4) ON CONFLICT DO NOTHING""",
-          fetch_id, endpoint, raw_symbol, normalized_symbol)
+          (provider_code,fetch_id,endpoint,raw_provider_symbol,normalized_provider_symbol,resolution_note)
+          VALUES('akshare',$1,$2,$3,$4,$5) ON CONFLICT DO NOTHING""",
+          fetch_id, endpoint, raw_symbol, normalized_symbol, json.dumps(diagnostics, default=str) if diagnostics else None)
 
     async def list_unresolved(self) -> list[dict[str, Any]]:
         rows = await self._ready().fetch("""SELECT fetch_id::text,endpoint,raw_provider_symbol,
-          normalized_provider_symbol,first_seen_at FROM provider_unresolved_instruments
+          normalized_provider_symbol,resolution_note,first_seen_at FROM provider_unresolved_instruments
           WHERE provider_code='akshare' AND resolved_at IS NULL ORDER BY first_seen_at""")
         return [dict(row) for row in rows]
 
@@ -97,26 +101,26 @@ class AkshareMetadataRepository:
             async with connection.transaction():
                 for bar in bars:
                     values = {key: value for key, value in asdict(bar).items()
-                              if key not in {"provider", "bar_start", "trading_day", "fetched_at", "fetch_id", "raw_provider_symbol"}}
+                              if key not in {"provider", "bar_start", "trading_day", "fetched_at", "fetch_id", "raw_provider_symbol", "instrument_kind"}}
                     values["provider"] = bar.provider.value
                     payload = json.dumps(values, sort_keys=True, default=str)
                     previous = await connection.fetchrow("""SELECT payload,fetch_id FROM historical_bar_versions
-                      WHERE provider_code='akshare' AND instrument_id=$1 AND interval=$2 AND bar_start=$3""",
-                      bar.instrument_id, bar.interval, bar.bar_start)
+                      WHERE provider_code='akshare' AND provider_source=$1 AND instrument_id=$2 AND interval=$3 AND bar_start=$4""",
+                      bar.upstream_source or "unknown",bar.instrument_id, bar.interval, bar.bar_start)
                     previous_payload = json.loads(previous["payload"]) if previous and isinstance(previous["payload"],str) else (previous["payload"] if previous else None)
                     if previous and previous_payload != json.loads(payload):
                         revisions += 1
                         await connection.execute("""INSERT INTO historical_bar_revisions
-                          (provider_code,instrument_id,interval,bar_start,previous_payload,new_payload,
-                           previous_fetch_id,new_fetch_id) VALUES('akshare',$1,$2,$3,$4,$5::jsonb,$6,$7)""",
-                          bar.instrument_id, bar.interval, bar.bar_start, json.dumps(previous_payload), payload,
+                          (provider_code,provider_source,instrument_id,interval,bar_start,previous_payload,new_payload,
+                           previous_fetch_id,new_fetch_id) VALUES('akshare',$1,$2,$3,$4,$5,$6::jsonb,$7,$8)""",
+                          bar.upstream_source or "unknown",bar.instrument_id, bar.interval, bar.bar_start, json.dumps(previous_payload), payload,
                           previous["fetch_id"], bar.fetch_id)
                     await connection.execute("""INSERT INTO historical_bar_versions
-                      (provider_code,instrument_id,interval,bar_start,payload,fetch_id,fetched_at)
-                      VALUES('akshare',$1,$2,$3,$4::jsonb,$5,$6)
-                      ON CONFLICT(provider_code,instrument_id,interval,bar_start) DO UPDATE SET
+                      (provider_code,provider_source,instrument_id,interval,bar_start,payload,fetch_id,fetched_at)
+                      VALUES('akshare',$1,$2,$3,$4,$5::jsonb,$6,$7)
+                      ON CONFLICT(provider_code,provider_source,instrument_id,interval,bar_start) DO UPDATE SET
                       payload=EXCLUDED.payload,fetch_id=EXCLUDED.fetch_id,fetched_at=EXCLUDED.fetched_at,updated_at=now()""",
-                      bar.instrument_id, bar.interval, bar.bar_start, payload, bar.fetch_id, bar.fetched_at)
+                      bar.upstream_source or "unknown",bar.instrument_id, bar.interval, bar.bar_start, payload, bar.fetch_id, bar.fetched_at)
         return revisions
 
     async def close(self) -> None:
@@ -139,6 +143,8 @@ class QuestDbHistoricalBarRepository:
         for bar in bars:
             tags = f"provider=AKSHARE,instrument_id={_symbol(bar.instrument_id)},interval={bar.interval},upstream_source={_symbol(bar.upstream_source or 'unknown')}"
             fields = [f"exchange={_field_string(bar.exchange)}", f"provider_symbol={_field_string(bar.provider_symbol)}",
+                      f"raw_provider_symbol={_field_string(bar.raw_provider_symbol)}", f"instrument_kind={_field_string(bar.instrument_kind)}",
+                      f"quality={_field_string(bar.quality)}",
                       f"trading_day={_field_string(bar.trading_day.isoformat())}", f"source={_field_string(bar.source)}",
                       f"fetch_id={_field_string(bar.fetch_id)}", f"fetched_at={int(bar.fetched_at.timestamp()*1_000_000)}t"]
             for name in ("open", "high", "low", "close", "settlement", "turnover"):

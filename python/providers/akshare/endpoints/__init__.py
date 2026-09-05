@@ -1,3 +1,6 @@
-from .futures import FuturesContractReferenceAdapter, FuturesDailyAdapter, FuturesMinuteBarAdapter, RealtimeQuoteAdapter
+from .futures import (FuturesContractReferenceAdapter, FuturesDailyAdapter,
+                      FuturesForeignDailyAdapter, FuturesForeignDailyEastmoneyAdapter, FuturesMinuteBarAdapter,
+                      RealtimeQuoteAdapter)
 
-__all__=["FuturesDailyAdapter","FuturesContractReferenceAdapter","FuturesMinuteBarAdapter","RealtimeQuoteAdapter"]
+__all__=["FuturesDailyAdapter","FuturesForeignDailyAdapter","FuturesForeignDailyEastmoneyAdapter","FuturesContractReferenceAdapter",
+         "FuturesMinuteBarAdapter","RealtimeQuoteAdapter"]

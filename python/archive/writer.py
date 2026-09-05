@@ -7,7 +7,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from .schema import COLUMN_NAMES,MARKET_DATA_SCHEMA
 
-SAFE=re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+SAFE=re.compile(r"^[A-Za-z0-9_-]{1,32}(?:\.(?:continuous|[1-9][0-9]*[dmy]|index|spot|cfd|synthetic))?$")
 @dataclass(frozen=True)
 class ArchiveResult: path:Path;row_count:int;verified:bool
 
@@ -16,7 +16,7 @@ def partition_path(root:Path,exchange:str,instrument:str,trading_day:str)->Path:
     day=f"{trading_day[:4]}-{trading_day[4:6]}-{trading_day[6:]}"
     return root/"ctp"/f"exchange={exchange}"/f"instrument={instrument}"/f"trading_day={day}"
 
-def _summary(table:pa.Table,schema_version:int=2)->dict:
+def _summary(table:pa.Table,schema_version:int=3)->dict:
     events=table.column("event_ts");instruments=sorted(set(table.column("instrument").to_pylist()))
     result={"schema_version":schema_version,"row_count":table.num_rows,"min_event_ts":None if not table.num_rows else events[0].as_py().isoformat(),"max_event_ts":None if not table.num_rows else events[-1].as_py().isoformat(),"instruments":instruments}
     if schema_version>=2:result["providers"]=sorted(set(value or "ctp" for value in table.column("provider").to_pylist()))
@@ -46,7 +46,7 @@ def archive_partition(source,root:Path,exchange:str,instrument:str,trading_day:s
                 table=pa.Table.from_pylist(normalized,schema=MARKET_DATA_SCHEMA);writer.write_table(table);row_count+=table.num_rows;events=table.column("event_ts");min_event=min_event or events[0].as_py();max_event=events[-1].as_py();instruments.update(table.column("instrument").to_pylist());providers.update(table.column("provider").to_pylist())
         finally:writer.close()
         if not row_count:raise ValueError("source partition is empty")
-        os.replace(parquet_tmp,parquet);verification={"schema_version":2,"row_count":row_count,"min_event_ts":min_event.isoformat(),"max_event_ts":max_event.isoformat(),"instruments":sorted(instruments),"providers":sorted(providers)};manifest={"partition":{"exchange":exchange,"instrument":instrument,"trading_day":trading_day},"verification":verification,"created_at":datetime.now(timezone.utc).isoformat(),"format":"parquet","compression":"zstd"}
+        os.replace(parquet_tmp,parquet);verification={"schema_version":3,"row_count":row_count,"min_event_ts":min_event.isoformat(),"max_event_ts":max_event.isoformat(),"instruments":sorted(instruments),"providers":sorted(providers)};manifest={"partition":{"exchange":exchange,"instrument":instrument,"trading_day":trading_day},"verification":verification,"created_at":datetime.now(timezone.utc).isoformat(),"format":"parquet","compression":"zstd"}
         manifest_tmp.write_text(json.dumps(manifest,sort_keys=True,indent=2)+"\n");os.replace(manifest_tmp,success);verify_archive(destination)
         return ArchiveResult(destination,row_count,True)
     except Exception:

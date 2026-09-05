@@ -19,12 +19,18 @@ class Settings:
     provider_fallback_enabled: bool = False
     provider_allow_stale: bool = False
     provider_discrepancy_bps: float = 20.0
+    historical_provider_policy: str = "ctp:100:DERIVED,ibkr:90:BROKER,akshare:50:PUBLIC"
+    historical_minimum_coverage: float = .95
+    historical_refresh_policy: str = "akshare:1m:50:300:300:3:7:1:false:30:SINA_DOMESTIC:DOMESTIC,akshare:1d:50:3600:86400:3:7:1:true:0:SINA:DOMESTIC|FOREIGN"
+    historical_acquisition_fallback: bool = False
 
     zmq_rcvhwm: int = 1000
 
     def __post_init__(self) -> None:
         if type(self.zmq_rcvhwm) is not int or not 1 <= self.zmq_rcvhwm <= 2_147_483_647:
             raise ValueError("ZMQ_RCVHWM must be an integer in 1..2147483647")
+        if not 0 <= self.historical_minimum_coverage <= 1:
+            raise ValueError("HISTORICAL_MINIMUM_COVERAGE must be in [0,1]")
 
     @property
     def zmq_endpoints(self) -> list[str]:
@@ -49,6 +55,10 @@ class Settings:
             provider_fallback_enabled=os.getenv("PROVIDER_FALLBACK_ENABLED","false").lower() in {"1","true","yes"},
             provider_allow_stale=os.getenv("PROVIDER_ALLOW_STALE","false").lower() in {"1","true","yes"},
             provider_discrepancy_bps=float(os.getenv("PROVIDER_DISCREPANCY_BPS","20")),
+            historical_provider_policy=os.getenv("HISTORICAL_PROVIDER_POLICY","ctp:100:DERIVED,ibkr:90:BROKER,akshare:50:PUBLIC"),
+            historical_minimum_coverage=float(os.getenv("HISTORICAL_MINIMUM_COVERAGE","0.95")),
+            historical_refresh_policy=os.getenv("HISTORICAL_REFRESH_POLICY","akshare:1m:50:300:300:3:7:1:false:30:SINA_DOMESTIC:DOMESTIC,akshare:1d:50:3600:86400:3:7:1:true:0:SINA:DOMESTIC|FOREIGN"),
+            historical_acquisition_fallback=os.getenv("HISTORICAL_ACQUISITION_FALLBACK","false").lower() in {"1","true","yes"},
         )
         if value.websocket_queue_capacity<1:raise ValueError("WEBSOCKET_QUEUE_CAPACITY must be positive")
         if value.postgres_timeout_seconds<=0:raise ValueError("POSTGRES_TIMEOUT_SECONDS must be positive")

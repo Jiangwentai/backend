@@ -22,7 +22,7 @@ Only registered, enabled endpoints can run. The two experimental entries documen
 
 ## Identity, mapping, and lineage
 
-Provider-native symbols are normalized for lookup but never treated as canonical IDs. `provider_instruments` must contain an `akshare` mapping to an existing physical contract. An unresolved symbol leaves its raw archive intact, creates `provider_unresolved_instruments`, rejects canonical rows, increments mapping/rejection metrics, and makes the ingestion run `PARTIAL`.
+Provider-native symbols are normalized for lookup but never treated as canonical IDs. Explicit mappings take priority; ordinary physical contracts resolve through the shared deterministic resolver even without a `provider_instruments` or `futures_contracts` row. Administrative aliases for unregistered or nonphysical instruments use existing provider JSON metadata. An unresolved symbol leaves its raw archive intact, creates `provider_unresolved_instruments`, rejects canonical rows, increments mapping/rejection metrics, and makes the ingestion run `PARTIAL`.
 
 Every fetch receives a UUID `fetch_id`. Its manifest and rows retain the AKShare function, upstream source, raw request parameters, fetch time, package version, schema version, row count, and SHA-256. Raw provider columns remain intact.
 
@@ -67,6 +67,7 @@ docker compose --profile akshare run --rm akshare-worker metrics
 docker compose --profile akshare run --rm akshare-worker refresh-reference
 docker compose --profile akshare run --rm akshare-worker fetch futures-daily --instrument SHFE.rb2610 --start 2024-01-01
 docker compose --profile akshare run --rm akshare-worker fetch futures-1m --instrument SHFE.rb2610
+docker compose --profile akshare run --rm akshare-worker fetch futures-foreign-daily --instrument LME.zn.3m --start 2024-01-01
 docker compose --profile akshare run --rm akshare-worker backfill futures-1m --instrument SHFE.rb2610 --state /raw/backfill.json
 docker compose --profile akshare run --rm akshare-worker quote SHFE.rb2610
 docker compose --profile akshare run --rm akshare-worker unresolved-symbols
@@ -86,3 +87,17 @@ Canonical rows are queried through the existing API with `GET /v1/bars/SHFE.zn26
 - `futures_display_main_sina` is disabled because AKShare 1.18.74 passes a string result from `match_main_contract` into `pandas.concat`; it must be re-verified after an upstream fix.
 - Inventory and position endpoints are unstable and unscheduled.
 - Quote polling is public-source best effort, not exchange-direct realtime. Market depth, tick reconstruction, provider arbitration, and fallback are not implemented.
+
+
+## Universal instrument resolution
+
+See [instrument identity](../instruments.md) for domestic/foreign rules, CZCE context, LME/continuous semantics, read-only resolution and mapping CLI, migration steps, reference synchronization, and diagnostics. `refresh-reference --dataset foreign-products` imports the pinned provider product table without registering physical contracts. Daily/1m fetches format ordinary native symbols automatically. `futures-foreign-daily` is a separate Sina route and calls `futures_foreign_hist`; foreign instruments are rejected by domestic endpoints and domestic instruments by the foreign endpoint. Quote batches use validated symbol-set joins, including explicitly known Sina Chinese display names. Live snapshots remain `BEST_EFFORT`, and fallback remains opt-in.
+
+Historical refresh is queue-driven. API ensure requests never call AKShare synchronously; the separate fetch worker uses the existing ingestion service so raw archives, validation, lineage, provider-aware storage and same-provider revisions remain intact. Sina 1-minute history is declared bounded/non-range-controllable, with conservative cooldown and backoff. Daily scheduling refreshes only configured/recently accessed mutable windows and does not poll continuously.
+
+Foreign capability is intentionally narrower: confirmed Sina and Eastmoney foreign history is
+daily, while their foreign market/quote interfaces are realtime or best-effort snapshots.
+Neither is advertised as foreign historical `1m`, and snapshot polling is never historical
+backfill. Capability selection distinguishes upstream source, market and interval:
+`LME.zn.3m/1m` rejects AKShare before a provider call, while `LME.zn.3m/1d` uses the existing
+`futures_foreign_hist` route.

@@ -4,7 +4,7 @@ import re
 import httpx
 from .schema import COLUMN_NAMES
 
-CODE=re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+CODE=re.compile(r"^[A-Za-z0-9_-]{1,32}(?:\.(?:continuous|[1-9][0-9]*[dmy]|index|spot|cfd|synthetic))?$")
 DAY=re.compile(r"^[0-9]{8}$")
 
 def _literal(value:str)->str:

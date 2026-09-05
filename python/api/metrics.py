@@ -15,6 +15,16 @@ class ApiMetrics:
     provider_failovers_total: int = 0
     provider_selection_failures_total: int = 0
     provider_discrepancies_total: int = 0
+    historical_query_total: int = 0
+    historical_selection_total: int = 0
+    historical_selection_no_data_total: int = 0
+    historical_composite_fallback_total: int = 0
+    historical_coverage_queries_total: int = 0
+    historical_incomplete_queries_total: int = 0
+    historical_fetch_requests_total: int = 0
+    historical_fetch_deduplicated_total: int = 0
+    historical_fetch_cooldown_total: int = 0
+    historical_fetch_skipped_complete_total: int = 0
 
     def observe(self, method: str, path: str, status: int, duration: float) -> None:
         self.requests[(method, path, status)] += 1
@@ -82,5 +92,25 @@ def render_metrics(app) -> str:
       "# TYPE market_data_provider_selection_failures_total counter\n",
       _metric("market_data_provider_selection_failures_total",api.provider_selection_failures_total),
       "# TYPE market_data_provider_discrepancies_total counter\n",
-      _metric("market_data_provider_discrepancies_total",api.provider_discrepancies_total)])
+      _metric("market_data_provider_discrepancies_total",api.provider_discrepancies_total),
+      "# TYPE market_data_historical_query_total counter\n",
+      _metric("market_data_historical_query_total",api.historical_query_total),
+      "# TYPE market_data_historical_selection_total counter\n",
+      _metric("market_data_historical_selection_total",api.historical_selection_total),
+      "# TYPE market_data_historical_selection_no_data_total counter\n",
+      _metric("market_data_historical_selection_no_data_total",api.historical_selection_no_data_total),
+      "# TYPE market_data_historical_composite_fallback_total counter\n",
+      _metric("market_data_historical_composite_fallback_total",api.historical_composite_fallback_total),
+      "# TYPE market_data_historical_coverage_queries_total counter\n",
+      _metric("market_data_historical_coverage_queries_total",api.historical_coverage_queries_total),
+      "# TYPE market_data_historical_incomplete_queries_total counter\n",
+      _metric("market_data_historical_incomplete_queries_total",api.historical_incomplete_queries_total),
+      "# TYPE market_data_historical_fetch_requests_total counter\n",
+      _metric("market_data_historical_fetch_requests_total",api.historical_fetch_requests_total),
+      "# TYPE market_data_historical_fetch_deduplicated_total counter\n",
+      _metric("market_data_historical_fetch_deduplicated_total",api.historical_fetch_deduplicated_total),
+      "# TYPE market_data_historical_fetch_cooldown_total counter\n",
+      _metric("market_data_historical_fetch_cooldown_total",api.historical_fetch_cooldown_total),
+      "# TYPE market_data_historical_fetch_skipped_complete_total counter\n",
+      _metric("market_data_historical_fetch_skipped_complete_total",api.historical_fetch_skipped_complete_total)])
     return "".join(output)

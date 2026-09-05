@@ -5,6 +5,8 @@ from datetime import date, datetime
 from enum import StrEnum
 from typing import Any, Protocol
 
+from historical.models import HistoricalCapabilities, default_historical_capabilities
+
 
 class ProviderId(StrEnum):
     AKSHARE = "AKSHARE"
@@ -40,6 +42,14 @@ class ProviderCapabilities:
     intraday_bars: bool = True
     reference_data: bool = True
     best_effort_quotes: bool = False
+    supported_historical_intervals: tuple[str,...] = ("1d","1m")
+    supports_arbitrary_range: bool = False
+    bounded_recent_history: bool = True
+    supports_latest_bars: bool = True
+    recommended_min_refresh_interval: int = 300
+    historical_capabilities: tuple[HistoricalCapabilities,...] = field(
+        default_factory=lambda:default_historical_capabilities("AKSHARE"))
+    supports_realtime_snapshot: bool = True
 
 
 @dataclass(frozen=True)
@@ -48,6 +58,7 @@ class QuoteSubscription:
     provider_symbol: str
     exchange: str
     market: str = "CF"
+    instrument_kind: str = "UNKNOWN"
 
 
 @dataclass(frozen=True)
@@ -72,6 +83,9 @@ class QuoteSnapshot:
     ask_volume1: int | None
     source: str
     upstream_source: str | None
+    provider_symbol: str | None = None
+    raw_provider_symbol: str | None = None
+    instrument_kind: str = "UNKNOWN"
 
 
 @dataclass(frozen=True)
@@ -90,6 +104,8 @@ class HistoricalBarRequest:
     end: date | None = None
     endpoint: str = "futures_daily_sina"
     exchange: str | None = None
+    trigger: str = "MANUAL"
+    acquisition_request_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -121,9 +137,12 @@ class HistoricalBar:
     upstream_source: str | None
     fetch_id: str
 
+    instrument_kind: str = "UNKNOWN"
+    quality: str = "PUBLIC"
+
     @property
-    def identity(self) -> tuple[str, str, str, datetime]:
-        return self.provider.value, self.instrument_id, self.interval, self.bar_start
+    def identity(self) -> tuple[str, str, str, str, datetime]:
+        return self.provider.value, self.upstream_source or "unknown", self.instrument_id, self.interval, self.bar_start
 
 
 @dataclass(frozen=True)

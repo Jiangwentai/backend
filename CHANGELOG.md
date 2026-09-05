@@ -1,5 +1,16 @@
 # Changelog
 
+- Added the Task 3 provider-independent historical acquisition coordinator, persistent PostgreSQL queue, overlap deduplication, multi-worker-safe claims, cooldown/backoff, bounded worker concurrency, scheduled mutable windows, recently accessed universe, on-demand ensure/status APIs, AKShare worker adapter, CLI and failure isolation. GET history remains local-only and Task 2 selection is unchanged.
+- Corrected historical capability selection to be provider/source, market and interval aware. AKShare foreign daily history remains supported; foreign historical 1-minute requests are rejected before provider I/O and fall back only to an explicitly capable provider. Realtime snapshots do not imply historical bars.
+- Added provider-independent historical coverage over canonical calendars/sessions, configurable historical provider quality/priority, EXPLICIT/SINGLE/COMPOSITE read-side selection, strict completeness errors, contribution diagnostics, coverage API, and low-cardinality counters. Provider observations and DEDUP keys remain independent; composite output is never persisted.
+
+## 2026-09-05 — Universal instrument resolution
+
+- Added a provider-independent deterministic identity resolver with explicit instrument kinds, conservative normalization, domestic/CZCE handling, international month codes, vetted foreign roots, continuous/product aliases and LME rolling tenors. Explicit mappings override parsing; ambiguity and conflicts remain visible. Metadata pre-registration is no longer required for ordinary contracts.
+- Integrated AKShare domestic daily/1m/quote ingestion and separate Sina foreign daily history, plus forward/reverse resolution, mapping administration/audit CLI and foreign reference synchronization. Preserved legacy repository tuples and fetch CLI while correcting canonical historical IDs. Quote rows now join by validated symbol identity, including known Sina display-name aliases, and reject malformed response sets.
+- Reused PostgreSQL provider/reference JSON for typed aliases; added QuestDB nullable provenance migrations 008–014 without changing DEDUP keys. Added API provenance/null semantics, compatible historical reads and schema-v3 provenance archives with old archive read compatibility.
+- Corrected the optional Python live writer's nanosecond timestamp suffix after real QuestDB validation exposed overflow. CTP callback behavior, C++ paths and provider selection remain unchanged.
+
 ## 2026-09-05 — Live transport HWM configuration
 
 - Made C++ PUB `SNDHWM` configurable through `live.sndhwm` / `ZMQ_SNDHWM`, and FastAPI SUB `RCVHWM` through `ZMQ_RCVHWM`, including Compose wiring. Both retain the default 1000 and require bounded positive 32-bit integer values before bind/connect.

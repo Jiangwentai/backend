@@ -51,6 +51,10 @@ services:
       PROVIDER_FALLBACK_ENABLED: ${PROVIDER_FALLBACK_ENABLED:-false}
       PROVIDER_ALLOW_STALE: ${PROVIDER_ALLOW_STALE:-false}
       PROVIDER_DISCREPANCY_BPS: ${PROVIDER_DISCREPANCY_BPS:-20}
+      HISTORICAL_REFRESH_POLICY: ${HISTORICAL_REFRESH_POLICY:-akshare:1m:50:300:300:3:7:1:false:30:SINA_DOMESTIC:DOMESTIC,akshare:1d:50:3600:86400:3:7:1:true:0:SINA:DOMESTIC|FOREIGN}
+      HISTORICAL_ACQUISITION_FALLBACK: ${HISTORICAL_ACQUISITION_FALLBACK:-false}
+      HISTORICAL_PROVIDER_POLICY: ${HISTORICAL_PROVIDER_POLICY:-ctp:100:DERIVED,ibkr:90:BROKER,akshare:50:PUBLIC}
+      HISTORICAL_MINIMUM_COVERAGE: ${HISTORICAL_MINIMUM_COVERAGE:-0.95}
       QDB_HTTP_URL: http://questdb:9000
       WEBSOCKET_QUEUE_CAPACITY: ${WEBSOCKET_QUEUE_CAPACITY:-128}
       LIVE_STALE_AFTER_SECONDS: ${LIVE_STALE_AFTER_SECONDS:-5}
@@ -114,6 +118,8 @@ services:
       AKSHARE_MAX_ATTEMPTS: ${AKSHARE_MAX_ATTEMPTS:-3}
       AKSHARE_SYMBOLS: ${AKSHARE_SYMBOLS:-}
       AKSHARE_DAILY_INTERVAL_SECONDS: ${AKSHARE_DAILY_INTERVAL_SECONDS:-86400}
+      HISTORICAL_REFRESH_POLICY: ${HISTORICAL_REFRESH_POLICY:-akshare:1m:50:300:300:3:7:1:false:30:SINA_DOMESTIC:DOMESTIC,akshare:1d:50:3600:86400:3:7:1:true:0:SINA:DOMESTIC|FOREIGN}
+      HISTORICAL_REFRESH_INSTRUMENTS: ${HISTORICAL_REFRESH_INSTRUMENTS:-}
     volumes:
       - akshare-raw-data:/raw
     depends_on:
@@ -122,6 +128,28 @@ services:
       postgres:
         condition: service_healthy
     command: ["schedule"]
+  historical-fetch-worker:
+    build:
+      context: .
+      dockerfile: docker/akshare.Dockerfile
+    profiles: ["akshare"]
+    environment:
+      POSTGRES_DSN: postgresql://${POSTGRES_USER:-market_data}:${POSTGRES_PASSWORD:-dev-only-password}@postgres:5432/${POSTGRES_DB:-market_data}
+      QDB_HTTP_URL: http://questdb:9000
+      AKSHARE_RAW_ROOT: /raw
+      AKSHARE_MAX_CONCURRENCY: ${AKSHARE_MAX_CONCURRENCY:-2}
+      AKSHARE_MIN_INTERVAL_MS: ${AKSHARE_MIN_INTERVAL_MS:-500}
+      AKSHARE_MAX_ATTEMPTS: ${AKSHARE_MAX_ATTEMPTS:-3}
+      HISTORICAL_REFRESH_POLICY: ${HISTORICAL_REFRESH_POLICY:-akshare:1m:50:300:300:3:7:1:false:30:SINA_DOMESTIC:DOMESTIC,akshare:1d:50:3600:86400:3:7:1:true:0:SINA:DOMESTIC|FOREIGN}
+      HISTORICAL_ACQUISITION_FALLBACK: ${HISTORICAL_ACQUISITION_FALLBACK:-false}
+    volumes:
+      - akshare-raw-data:/raw
+    depends_on:
+      questdb-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    command: ["run-fetch-worker"]
   akshare-quotes:
     build:
       context: .
