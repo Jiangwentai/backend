@@ -23,7 +23,10 @@ The system must support:
 - WebSocket APIs
 - future extension to additional market-data providers
 
+
 Future providers may include: LME, CME, FRED, SEC, Binance, IBKR, Chinese exchanges, additional broker APIs.
+
+AKShare is an implemented optional supplemental provider. It supplies persisted daily/1-minute historical bars and opt-in polled quote snapshots. AKShare snapshots must remain `BEST_EFFORT`, must not synthesize trades or depth, and must enter the provider-independent live ingress outside FastAPI and native provider callbacks. Provider fallback is disabled by default and may only occur under an explicit Phase 12 policy; every selected fallback must be visible in the API response and metrics.
 
 The system is intended for: personal quantitative research, futures market analysis, historical data analysis, backtesting, market monitoring, and future live-strategy infrastructure.
 
@@ -597,16 +600,6 @@ Every thread must have documented ownership. Do not casually share QuestDB sende
 * Phase 6: Historical Archive
 * Phase 7: Derived Data
 * Phase 8: Monitoring & Quality
-* Phase 9: Multi-Provider Architecture
-* Phase 11: AKShare Historical & Reference Data Provider
-
-## 78.1 Phase 9 Provider Requirements
-
-Provider-native APIs terminate at provider adapters. Canonical events carry provider, event type, canonical instrument identity, stable producer identity and sequence, event/receive timestamps, and quality. Real-time, historical, and reference capabilities use segregated interfaces. Each realtime provider owns an SPSC ingress boundary and the Dispatcher performs the fan-in; callbacks remain non-blocking. Persistence keys include provider identity, live schema v2 exposes provider metadata, and API/cache/archive/research paths remain provider-aware while retaining legacy quote fields. CTP and Synthetic use the common provider lifecycle. IBKR and AKShare connectivity remain later-phase work.
-
-## 78.2 Phase 11 AKShare Requirements
-
-AKShare is an optional, independently restartable Python historical/reference provider pinned to a verified version. Endpoint functions are centrally registered and accessed through a mockable, throttled, retry-bounded client. Provider-native responses are archived immutably before strict schema/type/quality normalization. Canonical symbols resolve only through PostgreSQL provider mappings; unresolved rows are retained and reported. Historical bars use semantic idempotency independent of realtime sequence identity, detect revisions, and retain complete fetch lineage. Normal APIs read canonical storage and never call AKShare synchronously. AKShare realtime polling, CTP fallback, provider arbitration, trading, and heavy scheduling infrastructure are prohibited.
 
 ## 79. V1 Definition of Done
 

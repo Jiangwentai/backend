@@ -4,7 +4,7 @@ from api.settings import Settings
 from conftest import FakeMetadataRepository,FakeRepository
 import pyarrow as pa
 
-def app_for(ticks,metadata=None):return create_app(settings=Settings(recovery_timeout_seconds=.2),repository=FakeRepository(ticks),metadata_repository=metadata or FakeMetadataRepository(),start_subscriber=False)
+def app_for(ticks,metadata=None,settings=None):return create_app(settings=settings or Settings(recovery_timeout_seconds=.2),repository=FakeRepository(ticks),metadata_repository=metadata or FakeMetadataRepository(),start_subscriber=False)
 
 def test_rest_serializes_quote_without_internal_shape(tick):
     with TestClient(app_for([tick])) as client:
@@ -36,6 +36,11 @@ def test_instruments_validate_query_and_report_database_failure():
         assert client.get("/v1/instruments").status_code==503
         assert client.get("/health").json()["components"]["postgres"]=="UNHEALTHY"
 
+def test_akshare_diagnostic_health_uses_metadata_not_live_path():
+    with TestClient(app_for([])) as client:
+        response=client.get("/v1/providers/akshare/health")
+        assert response.status_code==200 and response.json()["state"]=="AVAILABLE"
+
 def test_bars_are_loaded_off_event_loop_and_serialized():
     calls=[]
     def loader(root,exchange,instrument,interval,**filters):
@@ -55,6 +60,13 @@ def test_bars_validate_requests_and_report_missing_archive():
         assert client.get("/v1/bars/SHFE.zn2610?start_day=2026-09-04").status_code==422
         assert client.get("/v1/bars/SHFE.zn2610").status_code==404
 
+def test_akshare_bars_use_canonical_storage_and_expose_provenance():
+    row={"exchange":"SHFE","instrument":"zn2610","trading_day":"2026-09-04","interval":"1d","bar_start":"2026-09-03T16:00:00Z","open":10,"high":12,"low":9,"close":11,"volume":5,"open_interest":7,"settlement":10.5,"provider":"AKSHARE","source":"futures_zh_daily_sina","upstream_source":"SINA"}
+    app=create_app(settings=Settings(recovery_timeout_seconds=.2),repository=FakeRepository(bars=[row]),metadata_repository=FakeMetadataRepository(),start_subscriber=False)
+    with TestClient(app) as client:
+        response=client.get("/v1/bars/SHFE.zn2610?interval=1d&provider=akshare")
+        assert response.status_code==200 and response.json()[0]["provider"]=="AKSHARE" and response.json()[0]["source"]=="futures_zh_daily_sina"
+
 def test_prometheus_metrics_expose_api_live_database_and_websocket_state():
     with TestClient(app_for([])) as client:
         client.get("/health")
@@ -68,3 +80,22 @@ def test_prometheus_metrics_expose_api_live_database_and_websocket_state():
         assert "market_data_live_received_total 0" in body
         assert "market_data_websocket_clients 0" in body
         assert 'market_data_component_healthy{component="questdb"} 1' in body
+
+def test_provider_selection_requires_explicit_choice_by_default(tick):
+    other={**tick,"provider":"AKSHARE","quality":"BEST_EFFORT","producer_id":"ak","seq":1}
+    with TestClient(app_for([tick,other])) as client:
+        assert client.get("/v1/quotes/SHFE.zn2610").status_code==409
+        response=client.get("/v1/quotes/SHFE.zn2610?provider=akshare")
+        assert response.status_code==200 and response.json()["selection_reason"]=="EXPLICIT_PROVIDER"
+
+def test_configured_provider_failover_and_diagnostic_are_transparent(tick):
+    from datetime import datetime,timezone
+    now=int(datetime.now(timezone.utc).timestamp()*1_000_000)
+    stale={**tick,"event_ts":now-10_000_000,"recv_ts":now*1000-10_000_000_000,"provider":"ctp","quality":"REALTIME"}
+    fresh={**tick,"event_ts":now,"recv_ts":now*1000,"provider":"AKSHARE","quality":"BEST_EFFORT","producer_id":"ak"}
+    settings=Settings(recovery_timeout_seconds=.2,provider_selection_mode="preferred",provider_fallback_enabled=True)
+    with TestClient(app_for([stale,fresh],settings=settings)) as client:
+        value=client.get("/v1/quotes/SHFE.zn2610").json()
+        assert value["provider"]=="AKSHARE" and value["fallback"] and value["selection_reason"]=="FAILOVER"
+        diagnostic=client.get("/v1/provider-selection/SHFE.zn2610").json()
+        assert diagnostic["selected_provider"]=="AKSHARE" and len(diagnostic["observations"])==2

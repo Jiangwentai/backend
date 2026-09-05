@@ -11,6 +11,10 @@ class ApiMetrics:
     requests: dict[tuple[str, str, int], int] = field(default_factory=lambda: defaultdict(int))
     duration_seconds_sum: float = 0.0
     duration_seconds_count: int = 0
+    provider_selections_total: int = 0
+    provider_failovers_total: int = 0
+    provider_selection_failures_total: int = 0
+    provider_discrepancies_total: int = 0
 
     def observe(self, method: str, path: str, status: int, duration: float) -> None:
         self.requests[(method, path, status)] += 1
@@ -71,4 +75,12 @@ def render_metrics(app) -> str:
     output.append("# TYPE market_data_provider_events_received_total counter\n")
     for provider,count in sorted(subscriber.provider_received_total.items()):
         output.append(_metric("market_data_provider_events_received_total",count,f'{{provider="{provider}"}}'))
+    output.extend(["# TYPE market_data_provider_selections_total counter\n",
+      _metric("market_data_provider_selections_total",api.provider_selections_total),
+      "# TYPE market_data_provider_failovers_total counter\n",
+      _metric("market_data_provider_failovers_total",api.provider_failovers_total),
+      "# TYPE market_data_provider_selection_failures_total counter\n",
+      _metric("market_data_provider_selection_failures_total",api.provider_selection_failures_total),
+      "# TYPE market_data_provider_discrepancies_total counter\n",
+      _metric("market_data_provider_discrepancies_total",api.provider_discrepancies_total)])
     return "".join(output)

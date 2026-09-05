@@ -1,4 +1,4 @@
-# Financial Market Data Backend — Phase 0–9
+# Financial Market Data Backend — Phase 0–9, 11
 
 C++20 persistence pipeline for provider-independent market snapshots. The implemented path is:
 
@@ -9,6 +9,8 @@ C++20 persistence pipeline for provider-independent market snapshots. The implem
 - Web API: `LatestQuoteCache -> FastAPI REST + subscription-based WebSocket manager`.
 - Metadata: `FastAPI -> asyncpg pool -> PostgreSQL exchanges/products/contracts/calendars/sessions/roll metadata`.
 - Archive: `QuestDB closed logical partition -> paged reader -> Arrow schema -> immutable ZSTD Parquet + verification manifest`.
+- Supplemental history/reference: independent AKShare worker -> immutable raw Parquet -> canonical QuestDB daily/1-minute bars / PostgreSQL metadata.
+- Supplemental live observation: opt-in AKShare quote poller -> shared live ingress -> ZeroMQ -> provider-aware API cache (`BEST_EFFORT`, never automatic fallback).
 - Research: `completed Parquet partitions -> DuckDB -> raw tick scans / derived OHLCV bars / explicit continuous mappings`.
 
 The real CTP market-data adapter is optional and requires an operator-supplied SDK. No proprietary SDK files or credentials are stored here.
@@ -36,6 +38,8 @@ docker compose exec -T postgres psql -U market_data -d market_data -v ON_ERROR_S
   < sql/postgresql/002_reference_metadata.sql
 docker compose exec -T postgres psql -U market_data -d market_data -v ON_ERROR_STOP=1 \
   < sql/postgresql/003_providers.sql
+docker compose exec -T postgres psql -U market_data -d market_data -v ON_ERROR_STOP=1 \
+  < sql/postgresql/004_akshare.sql
 ```
 
 If the default host ports are occupied, override `QDB_HTTP_PORT`, `QDB_PG_PORT`, `QDB_METRICS_PORT`, or `POSTGRES_PORT`; service-to-service ports remain unchanged.
@@ -95,7 +99,33 @@ providers:
   ctp: {enabled: true}
 ```
 
-The canonical model distinguishes quote snapshots, trades, bid/ask ticks, depth updates, and provider-supplied bars. Phase 9 persists and distributes quote snapshots only; IBKR and AKShare connectivity are intentionally not implemented. See [provider architecture](docs/providers.md) and [data model](docs/data-model.md).
+The canonical model distinguishes quote snapshots, trades, bid/ask ticks, depth updates, and provider-supplied bars. The realtime plane persists and distributes quote snapshots only; IBKR connectivity remains unimplemented. Phase 11B adds AKShare 1-minute history and optional best-effort quote snapshots without changing CTP semantics. See [provider architecture](docs/providers.md) and [data model](docs/data-model.md).
+
+## Phase 11/11B AKShare workers
+
+AKShare 1.18.74 is an optional Python dependency used by dedicated workers. It supports Sina futures daily/1-minute bars, 九期网 contract/fee reference records, and opt-in Sina quote snapshots. Raw historical responses are written immutably before normalization; symbols require PostgreSQL `provider_instruments` mappings; canonical bars are idempotent and revisions are audited.
+
+```sh
+docker compose --profile akshare build akshare-worker
+docker compose --profile akshare run --rm akshare-worker list-datasets
+docker compose --profile akshare run --rm akshare-worker fetch RB2610 --exchange SHFE
+```
+
+Canonical results can be read with `/v1/bars/SHFE.rb2610?interval=1m&provider=akshare`; that request reads QuestDB and never calls upstream. Start quotes only after setting `AKSHARE_REALTIME_ENABLED=true`, `AKSHARE_QUOTE_INSTRUMENTS=SHFE.rb2610`, and the API's `AKSHARE_ZMQ_SUB_ENDPOINT`. Query with `/v1/quotes/SHFE.rb2610?provider=akshare`. Automatic fallback remains disabled by default. See [AKShare operations](docs/providers/akshare.md).
+
+## Phase 12 provider selection
+
+Provider-omitted quote requests default to safe `explicit` mode: if multiple providers exist, the API returns HTTP 409 and asks for `provider=`. Operators may enable `preferred` or `ranked` selection and separately opt into fallback:
+
+```sh
+PROVIDER_SELECTION_MODE=preferred
+PROVIDER_PREFERENCE=ctp,ibkr,synthetic,akshare
+PROVIDER_FALLBACK_ENABLED=true
+PROVIDER_ALLOW_STALE=false
+PROVIDER_DISCREPANCY_BPS=20
+```
+
+Selected quotes expose the policy reason and any fallback. Inspect all observations without altering them using `/v1/provider-selection/SHFE.rb2610`.
 
 Configuration defaults live in `config/app.yaml`; environment variables override deployment-sensitive fields. Never commit `.env`.
 

@@ -9,6 +9,7 @@ from starlette.concurrency import run_in_threadpool
 from pydantic import ValidationError
 from live.cache import LatestQuoteCache
 from live.subscriber import LiveSubscriber
+from live.selection import ProviderSelector,SelectionPolicy
 from .health import calculate_health
 from .metrics import ApiMetrics,render_metrics
 from research import load_bars
@@ -23,11 +24,16 @@ def create_app(*,settings:Settings|None=None,repository:Any|None=None,metadata_r
     config=settings or Settings.from_env()
     @asynccontextmanager
     async def lifespan(app:FastAPI):
-        cache=LatestQuoteCache();manager=WebSocketManager(config.websocket_queue_capacity)
+        cache=LatestQuoteCache({"akshare":config.akshare_quote_stale_after_seconds});manager=WebSocketManager(config.websocket_queue_capacity)
         repo=repository or QuestDBQuoteRepository(config.questdb_http_url,config.recovery_timeout_seconds)
         metadata=metadata_repository or PostgresMetadataRepository(config.postgres_dsn,config.postgres_timeout_seconds)
-        subscriber=LiveSubscriber(config.zmq_endpoint,cache,manager.publish)
-        app.state.cache=cache;app.state.websocket_manager=manager;app.state.repository=repo;app.state.metadata_repository=metadata;app.state.subscriber=subscriber
+        subscriber=LiveSubscriber(config.zmq_endpoints,cache,manager.publish)
+        selector=ProviderSelector(SelectionPolicy(mode=config.provider_selection_mode,
+          preferred_providers=config.provider_preference,fallback_enabled=config.provider_fallback_enabled,
+          allow_stale=config.provider_allow_stale,discrepancy_bps=config.provider_discrepancy_bps,
+          freshness_seconds=(("ctp",config.live_stale_after_seconds),("ibkr",config.live_stale_after_seconds),
+            ("synthetic",config.live_stale_after_seconds),("akshare",config.akshare_quote_stale_after_seconds))))
+        app.state.cache=cache;app.state.selector=selector;app.state.websocket_manager=manager;app.state.repository=repo;app.state.metadata_repository=metadata;app.state.subscriber=subscriber
         app.state.ready=False;app.state.questdb_healthy=None;app.state.postgres_healthy=None;subscriber_task=None
         try:
             if start_subscriber:
@@ -78,24 +84,54 @@ def create_app(*,settings:Settings|None=None,repository:Any|None=None,metadata_r
         except Exception as exc:
             app.state.postgres_healthy=False;raise HTTPException(503,"metadata database unavailable") from exc
 
+    @app.get("/v1/providers/akshare/health")
+    async def akshare_health():
+        try:return await app.state.metadata_repository.provider_health("akshare")
+        except Exception as exc:raise HTTPException(503,"AKShare health metadata unavailable") from exc
+
     @app.get("/v1/quotes/{symbol}",response_model=QuoteResponse)
     async def quote(symbol:str,provider:str|None=Query(None,pattern=r"^(ctp|synthetic|ibkr|akshare)$")):
         try:validate_symbol(symbol)
         except ValueError as exc:raise HTTPException(422,str(exc)) from exc
-        exchange,instrument=symbol.split(".",1);tick=await app.state.cache.lookup(exchange,instrument,provider)
-        if tick is None:raise HTTPException(404,"quote not found")
+        exchange,instrument=symbol.split(".",1)
+        if provider:
+            tick=await app.state.cache.lookup(exchange,instrument,provider)
+            if tick is not None:
+                tick=app.state.selector.assess([tick])[0];tick["selection_reason"]="EXPLICIT_PROVIDER"
+        else:
+            result=app.state.selector.select(await app.state.cache.candidates(exchange,instrument))
+            tick=result.quote
+            if tick is not None:
+                tick["selection_reason"]=result.reason;tick["fallback"]=result.fallback;tick["preferred_provider"]=result.preferred_provider
+                app.state.api_metrics.provider_selections_total+=1
+                if result.fallback:app.state.api_metrics.provider_failovers_total+=1
+            elif result.reason=="EXPLICIT_PROVIDER_REQUIRED":
+                app.state.api_metrics.provider_selection_failures_total+=1
+                raise HTTPException(409,"multiple providers available; specify provider or configure selection policy")
+        if tick is None:
+            app.state.api_metrics.provider_selection_failures_total+=1;raise HTTPException(404,"quote not found or no eligible provider")
         return quote_from_tick(tick)
+
+    @app.get("/v1/provider-selection/{symbol}")
+    async def provider_selection(symbol:str):
+        try:validate_symbol(symbol)
+        except ValueError as exc:raise HTTPException(422,str(exc)) from exc
+        exchange,instrument=symbol.split(".",1)
+        value=app.state.selector.diagnose(await app.state.cache.candidates(exchange,instrument))
+        if value["discrepancy"]:app.state.api_metrics.provider_discrepancies_total+=1
+        return {"symbol":symbol,**value}
 
     @app.get("/v1/quotes",response_model=list[QuoteResponse])
     async def quotes():
         snapshot=await app.state.cache.snapshot();return [quote_from_tick(tick) for _,tick in sorted(snapshot.items())]
 
     @app.get("/v1/bars/{symbol}",response_model=list[BarResponse])
-    async def bars(symbol:str,interval:str=Query("1m",pattern=r"^(1m|5m|1h|1d)$"),start_day:str|None=Query(None,pattern=r"^[0-9]{8}$"),end_day:str|None=Query(None,pattern=r"^[0-9]{8}$")):
+    async def bars(symbol:str,interval:str=Query("1m",pattern=r"^(1m|5m|1h|1d)$"),start_day:str|None=Query(None,pattern=r"^[0-9]{8}$"),end_day:str|None=Query(None,pattern=r"^[0-9]{8}$"),provider:str|None=Query(None,pattern=r"^akshare$")):
         try:validate_symbol(symbol)
         except ValueError as exc:raise HTTPException(422,str(exc)) from exc
         exchange,instrument=symbol.split(".",1)
         try:
+            if provider:return await app.state.repository.load_historical_bars(exchange,instrument,interval,start_day,end_day,provider)
             table=await run_in_threadpool(bar_loader,config.archive_root,exchange,instrument,interval,start_day=start_day,end_day=end_day)
             return table.to_pylist()
         except FileNotFoundError as exc:raise HTTPException(404,"archive not found") from exc

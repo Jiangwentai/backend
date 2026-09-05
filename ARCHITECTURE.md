@@ -1,6 +1,6 @@
 # Architecture handoff
 
-## Implemented system through Phase 9
+## Implemented system through Phase 12
 
 ```text
 SyntheticProvider and/or CtpMarketDataAdapter
@@ -21,6 +21,14 @@ SyntheticProvider and/or CtpMarketDataAdapter
               `-> bounded WebSocket connection manager
 ```
 
+Phase 11/11B adds a separate historical plane:
+
+```text
+AKShare worker -> daily/1m endpoint adapters -> immutable raw Parquet
+                              `------> canonical daily bars -> QuestDB historical_bars
+                              `------> reference/run/revision metadata -> PostgreSQL
+```
+
 ## Important decisions
 
 - Persistence and live distribution are independent planes. Never turn ZeroMQ into persistence or QuestDB into a polled live bus.
@@ -33,8 +41,10 @@ SyntheticProvider and/or CtpMarketDataAdapter
 - Provider-native APIs stop at adapters. Realtime, historical, and reference capabilities use segregated interfaces; `ProviderManager` owns lifecycle, subscription routing, capabilities, and health.
 - Synthetic and CTP may run concurrently. Each provider has a dedicated producer identity and SPSC queue; the Dispatcher round-robins all registered ingress queues.
 - The canonical model reserves quote, trade, bid/ask, depth, and bar variants. Phase 9 providers and downstream sinks currently emit/accept quote snapshots only.
+- AKShare is an optional Python-only historical/reference and best-effort quote provider. History remains isolated; a separate bounded quote poller emits `QuoteSnapshot` through the common live ingress and an independent ZeroMQ endpoint. It never runs on CTP callbacks, claims authoritative realtime, synthesizes trades, or triggers fallback.
 - FastAPI recovery subscribes to ZeroMQ before querying QuestDB; both live and recovery ticks pass through the same cache conflict resolver.
 - FastAPI V1 runs exactly one worker because cache, connection registry, and metrics are process-local.
+- Phase 12 adds a read-side `ProviderSelector` after the provider-aware cache. Explicit provider reads bypass arbitration; provider-omitted reads use the configured policy. Selection never overwrites source observations or changes persistence and fallback defaults off.
 
 ## Module responsibilities
 
@@ -54,8 +64,11 @@ SyntheticProvider and/or CtpMarketDataAdapter
 - `python/archive`: offline paged QuestDB reader, explicit Arrow schema, immutable ZSTD Parquet writer, verification manifest, and CLI.
 - `python/research`: read-only DuckDB scans over verified Parquet, trading-day-aware OHLCV derivation, explicit continuous-contract resolution, and CLI.
 - `python/quality`: read-only verified-archive integrity and anomaly checks with machine-readable reports and CI exit status.
+- `python/providers/akshare`: optional client seam, endpoint adapters, canonical historical/reference batches, immutable raw archive, repositories, scheduler/backfill, health, metrics, and CLI.
 - `python/api/metrics.py`: Prometheus-compatible API/live/WebSocket/dependency metrics; collector and QuestDB metrics remain in their owning processes.
 - `sql/questdb/001_ctp_market_data.sql`, `002`–`006`: WAL/DEDUP snapshot schema and additive provider/event/instrument/quality migrations.
+- `sql/questdb/007_historical_bars.sql`: provider-aware canonical historical bars with semantic DEDUP identity.
+- `sql/postgresql/004_akshare.sql`: ingestion runs, unresolved symbols, reference records, latest versions, and revision audit.
 - `cpp/include/market_data/ctp` and `cpp/src/ctp`: SDK-independent normalization/session logic plus the SDK-gated MdApi/Spi adapter. Only `adapter.cpp` includes proprietary headers.
 
 ## CTP constraints and operator verification

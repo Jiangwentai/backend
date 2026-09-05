@@ -9,8 +9,9 @@ def make_tick(symbol="SHFE.zn2610",seq=10,producer="550e8400-e29b-41d4-a716-4466
 def tick():return make_tick()
 
 class FakeRepository:
-    def __init__(self,ticks=None):self.ticks=ticks or [];self.closed=False
+    def __init__(self,ticks=None,bars=None):self.ticks=ticks or [];self.bars=bars or [];self.closed=False
     async def load_latest_quotes(self):return copy.deepcopy(self.ticks)
+    async def load_historical_bars(self,*args):return copy.deepcopy(self.bars)
     async def close(self):self.closed=True
 
 class FakeMetadataRepository:
@@ -21,4 +22,7 @@ class FakeMetadataRepository:
     async def list_instruments(self,**kwargs):
         if self.fail:raise RuntimeError("postgres unavailable")
         self.calls.append(kwargs);return self.instruments
+    async def provider_health(self,provider):
+        if self.fail:raise RuntimeError("postgres unavailable")
+        return {"provider":provider.upper(),"state":"AVAILABLE","last_success":None,"recent_failures":0,"error_code":None,"error_message":None}
     async def close(self):self.closed=True

@@ -1,7 +1,26 @@
 # Changelog
 
+## 2026-09-05 — Phase 12
+
+- Added a provider-neutral read-side selector with `explicit`, `preferred`, and `ranked` policies. Default `explicit` mode preserves prior behavior and requires `provider=` when multiple feeds coexist.
+- Added independently configured provider preference, freshness windows, opt-in failover, opt-in stale use, and quality ranking. Selected responses expose their reason, preferred provider, stale state, and whether failover occurred.
+- Added `/v1/provider-selection/{symbol}` diagnostics for simultaneous observations and cross-provider price discrepancies, plus bounded-label selection/failover/failure/discrepancy metrics.
+- Selection never rewrites cached events, affects persistence identity, invokes provider SDKs, or executes on CTP callbacks. Automatic fallback remains disabled unless explicitly configured.
+
+## 2026-09-05 — Phase 11B
+
+- Added AKShare/Sina 1-minute futures bars with strict OHLC/schema validation, explicit Asia/Shanghai conversion, night-session trading-day rules, immutable raw lineage, canonical idempotency/revision handling, range filtering, resumable backfill, periodic refresh, and stored FastAPI queries.
+- Added an opt-in, conservatively paced AKShare quote poller. It emits only provider-neutral `QuoteSnapshot` events marked `provider=AKSHARE` and `quality=BEST_EFFORT` through the shared live ingress; it never reconstructs trades or silently replaces CTP.
+- Added multi-endpoint live subscription, provider-aware case-normalized cache keys, AKShare age/stale fields, optional generic QuestDB live persistence, quote metrics, offline fixtures, and the `akshare-quotes` Compose service.
+- The existing `ctp_market_data` table name is retained as documented technical debt; its schema and DEDUP key are already provider-aware, so Phase 11B avoids a cosmetic risky migration.
+
 ## Unreleased
 
+- Phase 11 adds an optional, independently runnable AKShare 1.18.74 historical/reference provider without touching the realtime CTP/ZeroMQ path.
+- Added verified Sina futures daily and 九期网 contract-reference endpoint adapters, strict schema/type/OHLC validation, symbol normalization, PostgreSQL canonical mapping, and visible unresolved-symbol quarantine. The incompatible 1.18.74 Sina display-main helper is registered but disabled.
+- Added immutable raw ZSTD Parquet fetch archives with UUID lineage, manifests and hashes; canonical QuestDB daily bars use semantic DEDUP while PostgreSQL retains latest versions and explicit revision history.
+- Added provider-wide throttling, bounded transient retry with jitter, health, bounded-cardinality metrics, dataset scheduler, resumable backfill state, operational CLI, dedicated optional worker image, migrations, offline fixtures, and database integration tests.
+- Registered inventory (99QH) and position/ranking (Sina) endpoints as experimental and disabled; realtime polling, automatic fallback, arbitration, and Phase 11B remain out of scope.
 - Phase 09 introduced strong provider identity, capability/health models, canonical event headers and explicit quote/trade/bid-ask/depth/bar semantics.
 - Migrated Synthetic and CTP behind a common realtime-provider lifecycle, event sink, canonical subscriptions, instrument mapping, and `ProviderManager`.
 - Added one SPSC ingress queue per realtime provider with round-robin fan-in, preserving callback non-blocking behavior and downstream persistence/live isolation.

@@ -9,6 +9,19 @@ providers:
     enabled: false
   akshare:
     enabled: false
+    historical:
+      enabled: true
+    reference:
+      enabled: true
+    best_effort_quotes:
+      enabled: false
+    rate_limit:
+      max_concurrency: 2
+      min_interval_ms: 500
+    retry:
+      max_attempts: 3
+    raw_archive:
+      enabled: true
 queues:
   ingress_capacity: 1048576
   persistence_capacity: 1048576

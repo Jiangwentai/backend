@@ -27,3 +27,13 @@ class QuestDBQuoteRepository:
             tick["bid_price"]=[value[f"bid_price{i}"] for i in range(1,6)];tick["bid_volume"]=[value[f"bid_volume{i}"] for i in range(1,6)]
             tick["ask_price"]=[value[f"ask_price{i}"] for i in range(1,6)];tick["ask_volume"]=[value[f"ask_volume{i}"] for i in range(1,6)];result.append(tick)
         return result
+
+    async def load_historical_bars(self,exchange:str,instrument:str,interval:str,start_day:str|None=None,end_day:str|None=None,provider:str="akshare")->list[dict]:
+        allowed=lambda value:all(character.isalnum() or character in "_-" for character in value)
+        if not all(allowed(value) for value in (exchange,instrument,interval,provider)):raise ValueError("invalid historical bar query")
+        clauses=[f"provider='{provider.upper()}'",f"exchange='{exchange}'",f"instrument_id='{instrument}'",f"interval='{interval}'"]
+        if start_day:clauses.append(f"trading_day>='{start_day[:4]}-{start_day[4:6]}-{start_day[6:]}'")
+        if end_day:clauses.append(f"trading_day<='{end_day[:4]}-{end_day[4:6]}-{end_day[6:]}'")
+        query="SELECT exchange,instrument_id instrument,trading_day,interval,bar_start,open,high,low,close,volume,open_interest,settlement,provider,source,upstream_source FROM historical_bars WHERE "+" AND ".join(clauses)+" ORDER BY bar_start"
+        response=await self._client.get("/exec",params={"query":query});response.raise_for_status();payload=response.json();names=[column["name"] for column in payload["columns"]]
+        return [dict(zip(names,row)) for row in payload.get("dataset",[])]

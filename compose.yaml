@@ -43,6 +43,13 @@ services:
       dockerfile: docker/api.Dockerfile
     environment:
       ZMQ_SUB_ENDPOINT: ${ZMQ_SUB_ENDPOINT:-tcp://host.docker.internal:5556}
+      AKSHARE_ZMQ_SUB_ENDPOINT: ${AKSHARE_ZMQ_SUB_ENDPOINT:-}
+      AKSHARE_QUOTE_STALE_AFTER_SECONDS: ${AKSHARE_QUOTE_STALE_AFTER_SECONDS:-15}
+      PROVIDER_SELECTION_MODE: ${PROVIDER_SELECTION_MODE:-explicit}
+      PROVIDER_PREFERENCE: ${PROVIDER_PREFERENCE:-ctp,ibkr,synthetic,akshare}
+      PROVIDER_FALLBACK_ENABLED: ${PROVIDER_FALLBACK_ENABLED:-false}
+      PROVIDER_ALLOW_STALE: ${PROVIDER_ALLOW_STALE:-false}
+      PROVIDER_DISCREPANCY_BPS: ${PROVIDER_DISCREPANCY_BPS:-20}
       QDB_HTTP_URL: http://questdb:9000
       WEBSOCKET_QUEUE_CAPACITY: ${WEBSOCKET_QUEUE_CAPACITY:-128}
       LIVE_STALE_AFTER_SECONDS: ${LIVE_STALE_AFTER_SECONDS:-5}
@@ -92,7 +99,58 @@ services:
       ARCHIVE_ROOT: /archive
     volumes:
       - archive-data:/archive:ro
+  akshare-worker:
+    build:
+      context: .
+      dockerfile: docker/akshare.Dockerfile
+    profiles: ["akshare"]
+    environment:
+      POSTGRES_DSN: postgresql://${POSTGRES_USER:-market_data}:${POSTGRES_PASSWORD:-dev-only-password}@postgres:5432/${POSTGRES_DB:-market_data}
+      QDB_HTTP_URL: http://questdb:9000
+      AKSHARE_RAW_ROOT: /raw
+      AKSHARE_MAX_CONCURRENCY: ${AKSHARE_MAX_CONCURRENCY:-2}
+      AKSHARE_MIN_INTERVAL_MS: ${AKSHARE_MIN_INTERVAL_MS:-500}
+      AKSHARE_MAX_ATTEMPTS: ${AKSHARE_MAX_ATTEMPTS:-3}
+      AKSHARE_SYMBOLS: ${AKSHARE_SYMBOLS:-}
+      AKSHARE_DAILY_INTERVAL_SECONDS: ${AKSHARE_DAILY_INTERVAL_SECONDS:-86400}
+    volumes:
+      - akshare-raw-data:/raw
+    depends_on:
+      questdb-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    command: ["schedule"]
+  akshare-quotes:
+    build:
+      context: .
+      dockerfile: docker/akshare.Dockerfile
+    profiles: ["akshare"]
+    environment:
+      POSTGRES_DSN: postgresql://${POSTGRES_USER:-market_data}:${POSTGRES_PASSWORD:-dev-only-password}@postgres:5432/${POSTGRES_DB:-market_data}
+      QDB_HTTP_URL: http://questdb:9000
+      AKSHARE_RAW_ROOT: /raw
+      AKSHARE_REALTIME_ENABLED: ${AKSHARE_REALTIME_ENABLED:-false}
+      AKSHARE_QUOTE_INSTRUMENTS: ${AKSHARE_QUOTE_INSTRUMENTS:-}
+      AKSHARE_QUOTE_POLL_INTERVAL_SECONDS: ${AKSHARE_QUOTE_POLL_INTERVAL_SECONDS:-5}
+      AKSHARE_QUOTE_REQUEST_TIMEOUT_SECONDS: ${AKSHARE_QUOTE_REQUEST_TIMEOUT_SECONDS:-10}
+      AKSHARE_QUOTE_MAX_CONCURRENCY: ${AKSHARE_QUOTE_MAX_CONCURRENCY:-2}
+      AKSHARE_QUOTE_BATCH_SIZE: ${AKSHARE_QUOTE_BATCH_SIZE:-20}
+      AKSHARE_QUOTE_STALE_AFTER_SECONDS: ${AKSHARE_QUOTE_STALE_AFTER_SECONDS:-15}
+      AKSHARE_REALTIME_PERSIST: ${AKSHARE_REALTIME_PERSIST:-false}
+      AKSHARE_ZMQ_PUB_ENDPOINT: tcp://0.0.0.0:5557
+      AKSHARE_MAX_CONCURRENCY: ${AKSHARE_QUOTE_MAX_CONCURRENCY:-2}
+      AKSHARE_MIN_INTERVAL_MS: ${AKSHARE_MIN_INTERVAL_MS:-500}
+      AKSHARE_MAX_ATTEMPTS: ${AKSHARE_MAX_ATTEMPTS:-3}
+    ports: ["${AKSHARE_ZMQ_PORT:-5557}:5557"]
+    volumes:
+      - akshare-raw-data:/raw
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["serve-quotes"]
 volumes:
   questdb-data:
   postgres-data:
   archive-data:
+  akshare-raw-data:

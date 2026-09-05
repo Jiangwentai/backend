@@ -1,4 +1,4 @@
-# Architecture through Phase 9
+# Architecture through Phase 9 and Phase 11
 
 The C++ process owns ingestion, dispatch, QuestDB QWP persistence, and ZeroMQ publication. The Python process owns one ZeroMQ SUB socket, the process-local latest-quote cache, REST routes, and WebSocket connections. No WebSocket or REST operation runs on the persistence path.
 
@@ -39,5 +39,11 @@ Archive quality checks run offline against verified, immutable partitions. Integ
 Phase 9 introduces the provider boundary. Realtime adapters implement a common lifecycle and event sink; historical and reference capabilities remain segregated. `ProviderManager` owns startup rollback, reverse shutdown, subscription routing, capabilities, and health. The canonical model adds provider, event type, canonical instrument, and quality metadata and reserves quote, trade, bid/ask, depth, and bar variants. Current shared sinks support quote snapshots only.
 
 QuestDB DEDUP identity is now `(event_ts, provider, producer_id, seq)`. MessagePack writers emit schema v2 while readers accept v1; API cache and WebSocket coalescing distinguish providers. PostgreSQL records provider registrations and provider-symbol mappings. New Parquet files use schema v2 while DuckDB reads old schema-v1 archives with defaults. IBKR, AKShare, automatic failover, and arbitration are deliberately deferred.
+
+Phase 11B implements AKShare daily/1-minute history and reference data as an independent Python worker. Endpoint adapters acquire provider-native tabular data through a bounded client seam. The raw response is archived immutably before validation. A provider-independent ingestion service routes mapped bars to `historical_bars` in QuestDB and run/reference/revision metadata to PostgreSQL. Fetch IDs provide lineage but do not participate in canonical bar identity.
+
+An optional separate AKShare quote poller normalizes public snapshots to `QuoteSnapshot` and sends them through the shared realtime ingress. Its ZeroMQ stream is an additional API subscription endpoint, so CTP remains isolated. AKShare failures cannot stop CTP or the API; REST reads never call AKShare. Polling defaults off and no automatic provider fallback exists.
+
+Phase 12 places provider selection after the provider-aware live cache. The cache remains the source-of-truth collection of independent observations. Explicit queries retrieve an exact provider; provider-omitted queries may apply an operator-configured preferred or quality-ranked policy. Freshness and fallback decisions are read-side metadata only and never modify, merge, average, or republish provider events.
 
 V1 must run exactly one Uvicorn worker because cache, subscriptions, and metrics are process-local. Multi-worker synchronization is intentionally deferred; no Redis or broker is introduced.

@@ -9,7 +9,7 @@ Phase 9 makes CTP one implementation of a market-data provider rather than a sys
 - `ProviderManager` rejects duplicate provider IDs, starts providers with rollback on failure, stops them in reverse order, and routes subscriptions explicitly.
 - `IMarketEventSink` accepts canonical `MarketEvent` values. The current queue sink accepts quote snapshots and visibly rejects unsupported future variants.
 
-`ProviderId`, `ProviderState`, `ProviderCapabilities`, and `ProviderHealth` are strong provider-level concepts. CTP and Synthetic implement the realtime interface. IBKR and AKShare are identifiers reserved for later phases, not implemented connectors.
+`ProviderId`, `ProviderState`, `ProviderCapabilities`, and `ProviderHealth` are strong provider-level concepts. CTP and Synthetic implement the authoritative realtime interface. Phase 11B gives AKShare historical, intraday, reference, and a distinct `best_effort_quotes` capability; `realtime_quotes`, market depth, and trade ticks remain false. IBKR remains reserved for its own phase.
 
 ## Ingress and threading
 
@@ -37,4 +37,12 @@ Provider health is independent. A provider start failure rolls back already-star
 
 QuestDB, live cache, WebSocket coalescing, archive, DuckDB research, and quality checks include provider identity. Existing table names, CTP archive paths, quote fields, legacy `source`, and WebSocket subscription control remain compatible. MessagePack v1 is readable; writers emit v2.
 
-Non-quote canonical event variants are defined to prevent another core redesign, but Phase 9 downstream persistence and live publication support quote snapshots only.
+Non-quote canonical event variants are defined to prevent another core redesign, but Phase 9 realtime persistence and live publication support quote snapshots only. AKShare historical bars use a separate semantic identity and `historical_bars` repository; polled AKShare observations are `QuoteSnapshot`, never `BarEvent` or reconstructed `TradeTick`.
+
+See [AKShare historical/reference provider](providers/akshare.md) for endpoints, lineage, scheduling, revisions, and operations.
+
+## Selection and failover
+
+`PROVIDER_SELECTION_MODE=explicit` is the safe default: multiple observations require an explicit `provider=` query. `preferred` walks `PROVIDER_PREFERENCE`; `ranked` first compares declared quality and then provider preference. Both reject stale observations unless `PROVIDER_ALLOW_STALE=true`. Moving away from the first preferred provider additionally requires `PROVIDER_FALLBACK_ENABLED=true`. Responses identify `selection_reason`, `preferred_provider`, and `fallback`; no hidden fallback is permitted.
+
+`GET /v1/provider-selection/{symbol}` reports current provider observations, age/staleness, selected provider, and maximum price discrepancy in basis points. It is diagnostic only: the system does not average prices or alter upstream events.

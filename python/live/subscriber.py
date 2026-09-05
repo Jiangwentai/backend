@@ -11,13 +11,14 @@ from .protocol import decode_tick, expected_topic
 TickCallback = Callable[[dict], Awaitable[None] | None]
 
 class LiveSubscriber:
-    def __init__(self,endpoint:str,cache:LatestQuoteCache,on_tick:TickCallback|None=None):
-        self.endpoint=endpoint;self.cache=cache;self.on_tick=on_tick
+    def __init__(self,endpoint:str|list[str]|tuple[str,...],cache:LatestQuoteCache,on_tick:TickCallback|None=None):
+        self.endpoints=[endpoint] if isinstance(endpoint,str) else list(endpoint);self.endpoint=self.endpoints[0];self.cache=cache;self.on_tick=on_tick
         self.received_total=0;self.cache_updates_total=0;self.decode_failures_total=0;self.last_message_monotonic:float|None=None
         self.provider_received_total=defaultdict(int)
         self._stop=asyncio.Event();self.ready=asyncio.Event();self.healthy=False
     async def run(self):
-        context=zmq.asyncio.Context();socket=context.socket(zmq.SUB);socket.setsockopt(zmq.SUBSCRIBE,b"");socket.connect(self.endpoint)
+        context=zmq.asyncio.Context();socket=context.socket(zmq.SUB);socket.setsockopt(zmq.SUBSCRIBE,b"")
+        for endpoint in self.endpoints:socket.connect(endpoint)
         self.healthy=True;self.ready.set()
         try:
             while not self._stop.is_set():

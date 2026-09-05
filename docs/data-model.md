@@ -14,6 +14,12 @@ Every canonical event has an `EventHeader` containing provider, event type, qual
 
 Only quote snapshots are accepted by the current persistence and live sinks.
 
+## Historical provider bars
+
+AKShare daily and 1-minute bars use `(provider, instrument_id, interval, bar_start)` as canonical identity. They preserve provider symbol, exchange, trading day, OHLC, nullable optional values, upstream source, source function, fetch time, and fetch ID. This is intentionally separate from realtime `(provider, producer_id, seq, event_ts)` identity. A `QuoteSnapshot` is a polled point-in-time observation; it is neither a completed `HistoricalBar` nor proof of a `TradeTick`.
+
+The latest accepted version is stored in QuestDB `historical_bars` and PostgreSQL `historical_bar_versions`. Changed repeats create immutable `historical_bar_revisions` records. Every fetched source version remains in raw Parquet.
+
 ## QuestDB
 
 The existing `ctp_market_data` table is retained for operational compatibility. Phase 9 adds `provider`, `event_type`, `instrument_id`, and `quality` symbol columns. Replay identity is:

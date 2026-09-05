@@ -48,12 +48,18 @@ class QuoteResponse(BaseModel):
     lower_limit_price:float|None=None
     bid:list[BookLevel]
     ask:list[BookLevel]
+    stale:bool|None=None
+    age_seconds:float|None=None
+    timestamp_source:str|None=None
+    selection_reason:str|None=None
+    fallback:bool=False
+    preferred_provider:str|None=None
 
 def quote_from_tick(tick:dict)->QuoteResponse:
     def price(value:float|None)->float|None:return value if value is not None and math.isfinite(value) else None
     bids=[BookLevel(price=p,volume=v) for p,v in zip(tick["bid_price"],tick["bid_volume"]) if price(p) is not None]
     asks=[BookLevel(price=p,volume=v) for p,v in zip(tick["ask_price"],tick["ask_volume"]) if price(p) is not None]
-    return QuoteResponse(provider=tick.get("provider","ctp"),event_type=tick.get("event_type","quote_snapshot"),instrument_id=tick.get("instrument_id",f'{tick["exchange"]}.{tick["instrument"]}'),quality=tick.get("quality","UNKNOWN"),symbol=f'{tick["exchange"]}.{tick["instrument"]}',exchange=tick["exchange"],instrument=tick["instrument"],event_ts=_timestamp(tick["event_ts"],1_000_000),recv_ts=_timestamp(tick["recv_ts"],1_000_000_000),producer_id=tick["producer_id"],seq=tick["seq"],trading_day=_day(tick["trading_day"]),action_day=_day(tick["action_day"]),last_price=price(tick["last_price"]),volume=tick["volume"],turnover=tick["turnover"],open_interest=tick["open_interest"],upper_limit_price=price(tick["upper_limit_price"]),lower_limit_price=price(tick["lower_limit_price"]),bid=bids,ask=asks)
+    return QuoteResponse(provider=tick.get("provider","ctp"),event_type=tick.get("event_type","quote_snapshot"),instrument_id=tick.get("instrument_id",f'{tick["exchange"]}.{tick["instrument"]}'),quality=tick.get("quality","UNKNOWN"),symbol=f'{tick["exchange"]}.{tick["instrument"]}',exchange=tick["exchange"],instrument=tick["instrument"],event_ts=_timestamp(tick["event_ts"],1_000_000),recv_ts=_timestamp(tick["recv_ts"],1_000_000_000),producer_id=tick["producer_id"],seq=tick["seq"],trading_day=_day(tick["trading_day"]),action_day=_day(tick["action_day"]),last_price=price(tick["last_price"]),volume=tick["volume"] or 0,turnover=tick["turnover"] or 0,open_interest=tick["open_interest"] or 0,upper_limit_price=price(tick["upper_limit_price"]),lower_limit_price=price(tick["lower_limit_price"]),bid=bids,ask=asks,stale=tick.get("stale"),age_seconds=tick.get("age_seconds"),timestamp_source=tick.get("timestamp_source"),selection_reason=tick.get("selection_reason"),fallback=tick.get("fallback",False),preferred_provider=tick.get("preferred_provider"))
 
 class SubscriptionRequest(BaseModel):
     protocol_version:Literal[1]
@@ -101,4 +107,8 @@ class BarResponse(BaseModel):
     close:float
     volume:int
     open_interest:float|None
-    snapshot_count:int
+    snapshot_count:int|None=None
+    provider:str|None=None
+    source:str|None=None
+    upstream_source:str|None=None
+    settlement:float|None=None

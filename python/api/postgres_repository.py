@@ -36,3 +36,20 @@ class PostgresMetadataRepository:
 
     async def close(self)->None:
         if self._pool is not None:await self._pool.close();self._pool=None
+
+    async def provider_health(self,provider:str)->dict[str,Any]:
+        if self._pool is None:raise RuntimeError("PostgreSQL metadata repository is not connected")
+        row=await self._pool.fetchrow("""WITH recent AS (
+          SELECT status,completed_at,error_code,error_message FROM provider_ingestion_runs
+          WHERE provider_code=$1 ORDER BY started_at DESC LIMIT 10)
+          SELECT (SELECT status FROM recent LIMIT 1) last_status,
+                 (SELECT completed_at FROM recent WHERE status='SUCCESS' ORDER BY completed_at DESC LIMIT 1) last_success,
+                 count(*) FILTER(WHERE status='FAILED') failures,
+                 (SELECT error_code FROM recent LIMIT 1) error_code,
+                 (SELECT error_message FROM recent LIMIT 1) error_message FROM recent""",provider)
+        failures=int(row["failures"] or 0);last_status=row["last_status"]
+        state="AVAILABLE" if last_status=="SUCCESS" else "UNAVAILABLE" if failures>=3 and row["last_success"] is None else "DEGRADED"
+        return {"provider":provider.upper(),"state":state,"last_success":row["last_success"],
+                "recent_failures":failures,"error_code":row["error_code"],"error_message":row["error_message"],
+                "capabilities":{"historical_bars":True,"intraday_bars":True,"reference_data":True,
+                                "best_effort_quotes":True,"realtime_quotes":False,"market_depth":False,"trade_ticks":False}}

@@ -1,2639 +1,3493 @@
-# Phase 11 — AKShare Historical & Reference Data Provider
-
-## Status
-
-**Phase:** 11
-**Name:** AKShare Historical & Reference Data Provider
-**Prerequisite:** Phase 09 Multi-Provider Architecture completed
-**Recommended:** Phase 10 IBKR may be completed first, but is not a hard dependency
-**Primary Language:** Python 3.12+
-**Provider:** AKShare
-**Scope Type:** Historical data, reference data, supplemental datasets
-**Real-Time Status:** Non-primary / best-effort only; real-time streaming is NOT part of the primary Phase 11 scope
-
----
-
-# 1. Objective
-
-Integrate AKShare as a first-class provider for historical, reference, exchange-public and supplemental financial-market datasets.
-
-AKShare must primarily provide:
-
-```text
-Historical futures data
-Daily bars
-Historical contract data
-Continuous-contract reference data
-Exchange-public datasets
-Contract/reference metadata
-Inventory / warehouse datasets where available
-Position/ranking datasets where available
-Supplemental market data
-Historical gap filling
-Data cross-validation
-```
-
-AKShare must NOT replace CTP as the primary low-latency Chinese futures real-time market-data provider.
-
-The Phase 11 implementation must follow the multi-provider architecture established in Phase 09.
-
----
-
-# 2. Architectural Position
-
-AKShare is fundamentally different from CTP and IBKR.
-
-The intended architecture is:
-
-```text
-                       AKShare
-                          │
-                          ▼
-                  Python Provider
-                          │
-                          ▼
-                   Endpoint Adapter
-                          │
-                          ▼
-                     Normalizer
-                          │
-                ┌─────────┴─────────┐
-                ▼                   ▼
-        HistoricalDataBatch   ReferenceDataBatch
-                │                   │
-                └─────────┬─────────┘
-                          ▼
-                Provider-independent
-                 Ingestion Services
-                          │
-             ┌────────────┼────────────┐
-             ▼            ▼            ▼
-        Raw Parquet    QuestDB     PostgreSQL
-                         Bars       Metadata
-                          │
-                          ▼
-                       DuckDB
-```
+Phase 11B — AKShare Intraday Bars and Best-Effort Realtime Quotes
 
-AKShare historical/reference requests must NOT enter:
+Implementation status: complete (2026-09-05). Internet-dependent endpoint smoke tests remain operator-run; CI uses deterministic fakes.
 
-```text
-CTP callback pipeline
-high-frequency IngressQueue
-PersistenceQueue intended for realtime ticks
-ZeroMQ live feed
-WebSocket live quote path
-```
+1. Objective
 
-unless a future explicitly approved best-effort realtime feature is implemented.
+Extend the existing AKShare provider with two additional capabilities:
 
----
 
-# 3. Core Principle
 
-The AKShare adapter is responsible for:
+1-minute historical/intraday futures bars
 
-```text
-calling AKShare
-receiving DataFrames
-validating returned schema
-normalizing provider-native fields
-producing canonical data batches
-reporting source lineage
-reporting provider health
-```
+best-effort realtime quote polling
 
-The AKShare adapter must NOT contain:
+These are separate capabilities and MUST use separate logical pipelines.
 
-```text
-QuestDB-specific SQL
-PostgreSQL-specific business logic
-Parquet directory policy
-FastAPI route logic
-continuous-contract business rules
-bar-generation rules
-WebSocket logic
-```
+Phase 11B MUST preserve all architectural invariants established in Phase 0–11A.
 
-Those responsibilities belong to shared services.
+The purpose of this phase is to allow the backend to:
 
----
 
-# 4. Provider Capabilities
 
-AKShare must declare explicit capabilities.
+fetch AKShare futures 1-minute bars;
 
-Conceptually:
+persist canonical 1-minute bars;
 
-```python
-ProviderCapabilities(
-    realtime_quotes=False,
-    tick_by_tick=False,
-    market_depth=False,
-    historical_ticks=False,
-    historical_bars=True,
-    reference_data=True,
-)
-```
+archive raw intraday fetches;
 
-Optional best-effort quotes must not be advertised as primary realtime capability in the initial Phase 11 implementation.
+query stored 1-minute bars through FastAPI;
 
-If later enabled, expose them using a distinct capability such as:
+backfill historical 1-minute data;
 
-```text
-best_effort_quotes = true
-```
+periodically refresh recent intraday bars;
 
-rather than:
+optionally poll AKShare for best-effort quote snapshots;
 
-```text
-realtime_quotes = true
-```
+expose AKShare live quotes through the existing provider-aware realtime pipeline.
 
-unless the semantics have been explicitly verified.
+AKShare MUST NOT be treated as equivalent to CTP or other exchange/native realtime feeds.
 
----
+2. Scope
 
-# 5. Provider Identity
+Phase 11B contains two sub-capabilities:
 
-Use the canonical provider identity established in Phase 09:
 
-```text
-ProviderId::AKShare
-```
 
-or its Python equivalent:
+11B.1 AKShare Intraday Historical Bars
 
-```python
-ProviderId.AKSHARE
-```
+11B.2 AKShare Best-Effort Realtime Quotes
 
-Do not use arbitrary provider strings throughout the code.
+They share:
 
-Canonical value:
 
-```text
-AKSHARE
-```
 
----
+provider registration;
 
-# 6. Python Implementation
+provider symbol mappings;
 
-Implement AKShare integration as a separate Python module/process.
+health reporting;
 
-Preferred location:
+observability;
 
-```text
-python/
-└── providers/
-    └── akshare/
-        ├── __init__.py
-        ├── provider.py
-        ├── client.py
-        ├── registry.py
-        ├── models.py
-        ├── normalizers/
-        ├── endpoints/
-        ├── scheduler.py
-        ├── health.py
-        ├── metrics.py
-        └── tests/
-```
+configuration;
 
-Do not embed Python into the C++ CTP process.
+AKShare client abstraction.
 
-Do not link C++ directly against Python solely for AKShare.
+They MUST NOT share storage semantics or event semantics where those differ.
 
----
+3. Architectural Overview
 
-# 7. Process Isolation
+3.1 Historical 1-Minute Path
 
-AKShare failures must not affect:
-
-```text
-CTP Collector
-IBKR Provider
-QuestDB realtime writer
-ZeroMQ publisher
-FastAPI live feed
-```
-
-The AKShare worker should be independently restartable.
-
-Conceptually:
-
-```text
-market-data-core
-    │
-    ├── CTP process
-    ├── IBKR process
-    ├── FastAPI process
-    └── AKShare worker
-```
-
-A broken AKShare endpoint must never stop realtime market-data collection.
-
----
-
-# 8. Provider Interfaces
-
-Phase 11 must implement the historical/reference interfaces established by Phase 09.
-
-Conceptually:
-
-```python
-class HistoricalDataProvider(Protocol):
-
-    async def fetch_bars(
-        self,
-        request: HistoricalBarRequest,
-    ) -> HistoricalDataBatch:
-        ...
-```
-
-and:
-
-```python
-class ReferenceDataProvider(Protocol):
-
-    async def fetch_reference(
-        self,
-        request: ReferenceDataRequest,
-    ) -> ReferenceDataBatch:
-        ...
-```
-
-Exact interfaces should follow the actual Phase 09 implementation.
-
-Do not duplicate existing canonical interfaces.
-
----
-
-# 9. Do Not Create One Giant AKShare Function
-
-Prohibited architecture:
-
-```python
-def download_everything():
-    ...
-```
-
-Prefer endpoint-specific adapters.
-
-Example:
-
-```text
-AkshareProvider
-      │
-      ├── FuturesDailyAdapter
-      ├── FuturesContractAdapter
-      ├── FuturesInventoryAdapter
-      ├── FuturesPositionAdapter
-      └── FuturesContinuousReferenceAdapter
-```
-
-Each adapter should have clearly defined:
-
-```text
-input
-source
-expected columns
-normalization
-canonical output
-quality rules
-```
-
----
-
-# 10. Endpoint Registry
-
-Create a registry describing supported AKShare datasets.
-
-Conceptual model:
-
-```python
-@dataclass
-class EndpointDefinition:
-    name: str
-    function_name: str
-    dataset_type: DatasetType
-    upstream_source: str | None
-    frequency: DataFrequency
-    enabled: bool
-```
-
-The registry prevents AKShare function names from being scattered throughout the codebase.
-
----
-
-# 11. Initial Dataset Scope
-
-Phase 11 should initially prioritize Chinese futures.
-
-Required dataset categories:
-
-```text
-physical futures contract daily bars
-
-continuous/main-contract historical data
-for comparison/reference only
-
-exchange/product symbol information
-
-contract-related public information
-
-inventory / warehouse information
-where AKShare exposes suitable data
-
-position/ranking data
-where available and stable
-```
-
-Do not attempt to integrate every AKShare endpoint in one phase.
-
----
-
-# 12. Historical Contract Bars
-
-Support historical daily futures contract data.
-
-Canonical output should approximately represent:
-
-```text
-provider
-instrument_id
-provider_symbol
-
-interval
-bar_start
-trading_day
-
-open
-high
-low
-close
-
-volume
-open_interest
-settlement
-
-source
-fetched_at
-```
-
-For daily futures data:
-
-```text
-interval = 1d
-```
-
----
-
-# 13. Canonical Historical Bar Model
-
-Use or extend the canonical bar model.
-
-Conceptually:
-
-```python
-@dataclass
-class HistoricalBar:
-    provider: ProviderId
-
-    instrument_id: int
-    provider_symbol: str
-
-    interval: str
-
-    bar_start: datetime
-    trading_day: date
-
-    open: Decimal | float | None
-    high: Decimal | float | None
-    low: Decimal | float | None
-    close: Decimal | float | None
-
-    volume: int | None
-    open_interest: int | None
-    turnover: float | None
-    settlement: float | None
-
-    fetched_at: datetime
-
-    source: str
-```
-
-Reuse existing canonical models where possible.
-
----
-
-# 14. Do Not Trust Provider Symbols as Canonical Identity
-
-AKShare symbols are provider-native identifiers.
-
-Never assume:
-
-```text
-AKShare symbol
-=
-canonical InstrumentId
-```
-
-Required mapping:
-
-```text
-AKShare provider symbol
-        ↓
-provider_instruments
-        ↓
-canonical InstrumentId
-```
-
----
-
-# 15. Instrument Mapping
-
-Use the PostgreSQL:
-
-```text
-provider_instruments
-```
-
-mapping introduced in Phase 09.
-
-Example:
-
-```text
-provider       AKSHARE
-provider_symbol zn2610
-exchange        SHFE
-instrument_id   100042
-```
-
-Unmapped symbols must not silently create random canonical instruments.
-
----
-
-# 16. Unresolved Instrument Policy
-
-If AKShare returns a symbol that cannot be resolved:
-
-```text
-do not silently discard it
-```
-
-and:
-
-```text
-do not silently create a canonical instrument
-```
-
-Instead:
-
-```text
-record unresolved mapping
-store raw source data
-increment metric
-log warning
-quarantine normalized row if needed
-```
-
-Provide an operator-visible unresolved-instrument report.
-
----
-
-# 17. Symbol Normalization
-
-AKShare may expose symbols using different formatting conventions.
-
-Normalization may include:
-
-```text
-case normalization
-exchange suffix normalization
-contract-month formatting
-continuous-symbol recognition
-whitespace removal
-Chinese-name mapping
-```
-
-Provider symbol normalization must occur before canonical instrument resolution.
-
-Never alter the raw provider symbol stored in lineage metadata.
-
-Preserve both:
-
-```text
-raw_provider_symbol
-normalized_provider_symbol
-```
-
-where useful.
-
----
-
-# 18. Continuous Contract Data
-
-AKShare continuous/main-contract datasets are supplemental/reference data.
-
-They must NOT replace the backend's internally generated:
-
-```text
-continuous_contract_mapping
-main contract selection
-roll rules
-back-adjusted series
-```
-
-AKShare continuous contracts may be used for:
-
-```text
-comparison
-validation
-research
-fallback history
-```
-
-but the internally defined continuous-contract methodology remains authoritative for this backend.
-
----
-
-# 19. Source Lineage
-
-Every AKShare ingestion must record sufficient lineage.
-
-At minimum:
-
-```text
-provider = AKSHARE
-
-AKShare function name
-
-upstream source identifier
-if known
-
-provider symbol
-
-request parameters
-
-fetch timestamp
-
-AKShare package version
-
-normalizer/schema version
-```
-
-Where practical also record:
-
-```text
-row count
-response hash
-source date range
-```
-
----
-
-# 20. Upstream Source Must Be Distinguished from AKShare
-
-AKShare is often an aggregation/access layer.
-
-Therefore distinguish:
-
-```text
-provider
-```
-
-from:
-
-```text
-upstream_source
-```
-
-Example conceptual metadata:
-
-```text
-provider = AKSHARE
-upstream_source = SINA
-```
-
-or:
-
-```text
-provider = AKSHARE
-upstream_source = SHFE
-```
-
-where the source can be reliably identified.
-
-Do not represent all AKShare data as if AKShare itself were the originating exchange.
-
----
-
-# 21. Raw Data Preservation
-
-Before irreversible normalization, preserve the fetched source dataset.
-
-Preferred format:
-
-```text
-Parquet + ZSTD
-```
-
-Conceptual path:
-
-```text
-data/raw/
-  provider=akshare/
-    dataset=futures_daily/
-      fetch_date=2026-09-05/
-        ...
-```
-
-Raw archives must retain provider-native columns.
-
----
-
-# 22. Raw Archive Immutability
-
-Raw fetches must be immutable.
-
-If the same dataset is fetched again:
-
-```text
-do not overwrite the previous raw fetch
-```
-
-Store another fetch version.
-
-This allows analysis of:
-
-```text
-source revisions
-schema changes
-provider corrections
-historical corrections
-```
-
----
-
-# 23. Fetch Identity
-
-Each fetch operation should have:
-
-```text
-fetch_id
-```
-
-Example:
-
-```text
-UUID
-```
-
-All raw and normalized records generated from one fetch should be traceable to that fetch.
-
-Conceptually:
-
-```text
-fetch_id
-provider
-endpoint
-started_at
-completed_at
-status
-rows_received
-rows_accepted
-rows_rejected
-```
-
----
-
-# 24. Ingestion Run Metadata
-
-Add a PostgreSQL table or equivalent metadata store:
-
-```text
-provider_ingestion_runs
-```
-
-Suggested fields:
-
-```text
-id
-provider_id
-dataset
-endpoint
-
-started_at
-completed_at
-
-status
-
-request_parameters JSONB
-
-rows_received
-rows_normalized
-rows_rejected
-rows_written
-
-error_code
-error_message
-
-provider_version
-schema_version
-```
-
----
-
-# 25. Storage Routing
-
-Different AKShare data classes should go to different storage systems.
-
-## Historical time series
-
-Examples:
-
-```text
-daily futures bars
-historical price series
-```
-
-Canonical data may go to:
-
-```text
-QuestDB
-+
-Parquet
-```
-
----
-
-## Reference data
-
-Examples:
-
-```text
-contract metadata
-exchange information
-product metadata
-```
-
-Canonical data goes to:
-
-```text
-PostgreSQL
-```
-
----
-
-## Large raw datasets
-
-Store primarily in:
-
-```text
-Parquet
-```
-
-and query via:
-
-```text
-DuckDB
-```
-
----
-
-# 26. No Direct Storage Logic Inside Endpoint Adapter
-
-Prohibited:
-
-```python
-def fetch_daily(...):
-    df = ak.xxx(...)
-    questdb.write(...)
-```
-
-Required:
-
-```text
-Endpoint Adapter
-    ↓
-Canonical Batch
-    ↓
-Ingestion Service
-    ↓
-Storage Repository
-```
-
-This keeps provider acquisition separate from persistence.
-
----
-
-# 27. Repository Layer
-
-Use provider-independent repositories where existing architecture permits.
-
-Conceptually:
-
-```text
-HistoricalBarRepository
-ReferenceDataRepository
-RawArchiveRepository
-IngestionRunRepository
-```
-
-The AKShare module should produce data, not own storage policy.
-
----
-
-# 28. Idempotency
-
-Scheduled historical retrieval must be safe to run repeatedly.
-
-Example:
-
-```text
-job runs
-→ downloads 2026-09-04
-
-job retries
-→ downloads 2026-09-04 again
-```
-
-Canonical storage must not accumulate uncontrolled duplicate bars.
-
----
-
-# 29. Historical Bar Identity
-
-Logical canonical identity should include at minimum:
-
-```text
-provider
-instrument_id
-interval
-bar_start
-```
-
-If source distinctions require it, include:
-
-```text
-upstream_source
-```
-
-Do not use:
-
-```text
-fetch_id
-```
-
-as the bar identity.
-
-`fetch_id` is lineage, not market-data identity.
-
----
-
-# 30. Historical Revisions
-
-Historical providers may return revised values.
-
-Therefore repeated ingestion of:
-
-```text
-same provider
-same instrument
-same interval
-same bar_start
-```
-
-with changed market values must be detected.
-
-Do not simply ignore revisions.
-
-Record:
-
-```text
-revision detected
-previous value
-new value
-fetch_id
-fetched_at
-```
-
-according to the existing data-version policy.
-
-Raw source versions must always remain recoverable.
-
----
-
-# 31. Revision Policy
-
-Canonical query behavior should normally expose the latest accepted version.
-
-Raw/archive data must preserve previous versions.
-
-Conceptually:
-
-```text
-RAW
-fetch 1 → value A
-
-RAW
-fetch 2 → value B
-
-CANONICAL
-latest accepted → value B
-```
-
-The implementation must not destroy evidence that value A was previously supplied.
-
----
-
-# 32. QuestDB Historical Writes
-
-If canonical historical bars are written to QuestDB:
-
-* use explicit schema
-* use deterministic identity
-* use DEDUP where appropriate
-* do not reuse QWP realtime `producer_id + seq` semantics as the primary bar identity
-* preserve provider and source metadata
-
-Historical data has different semantic identity from realtime received events.
-
----
-
-# 33. Historical vs Realtime Identity
-
-Do not confuse:
-
-```text
-Realtime event identity:
-
-producer_id + seq
-```
-
-with:
-
-```text
-Historical bar identity:
-
-provider
-instrument_id
-interval
-bar_start
-```
-
-These solve different problems.
-
----
-
-# 34. Trading Day
-
-For futures daily data, preserve:
-
-```text
-trading_day
-```
-
-explicitly.
-
-Do not blindly infer futures trading day from arbitrary timestamps if the provider supplies a date intended as the trading date.
-
-Use the canonical PostgreSQL trading calendar for validation.
-
----
-
-# 35. Timezones
-
-Canonical timestamps must use the backend's established UTC conventions.
-
-Provider-native dates/times must be interpreted using the appropriate market timezone.
-
-Chinese futures:
-
-```text
-Asia/Shanghai
-```
-
-Do not assume server-local timezone.
-
----
-
-# 36. Data Type Normalization
-
-Normalize incoming DataFrame types explicitly.
-
-Do not depend on pandas inferred dtypes remaining stable.
-
-Validate and convert:
-
-```text
-dates
-timestamps
-floats
-integers
-nullable integers
-strings
-booleans
-```
-
-before canonical ingestion.
-
----
-
-# 37. Missing Values
-
-Normalize:
-
-```text
-NaN
-NaT
-None
-empty strings
-provider-specific missing markers
-```
-
-according to canonical nullable semantics.
-
-Never allow:
-
-```text
-NaN
-```
-
-to unintentionally become a legitimate database numeric value when NULL is appropriate.
-
----
-
-# 38. Schema Validation
-
-Every endpoint adapter must define expected columns.
-
-Example:
-
-```python
-REQUIRED_COLUMNS = {
-    "date",
-    "open",
-    "high",
-    "low",
-    "close",
-}
-```
-
-Optional fields should be explicitly identified.
-
-If required columns disappear:
-
-```text
-FAIL VISIBLE
-```
-
-Do not silently continue with incorrectly shifted field mappings.
-
----
-
-# 39. Schema Drift
-
-AKShare or its upstream sources may change returned columns.
-
-Implement schema-drift detection.
-
-Detect:
-
-```text
-missing required columns
-unexpected renamed columns
-unexpected datatype changes
-unexpected empty responses
-unexpected duplicate rows
-```
-
-Emit:
-
-```text
-metric
-warning/error
-failed ingestion run
-```
-
-where appropriate.
-
----
-
-# 40. Do Not Guess Changed Columns
-
-If an endpoint previously returned:
-
-```text
-hold
-```
-
-and suddenly returns an unrecognized replacement field:
-
-```text
-do not automatically guess its meaning
-```
-
-Fail the normalizer for that dataset and retain the raw response.
-
-This prevents silent data corruption.
-
----
-
-# 41. Data Quality Rules
-
-Historical bars must validate:
-
-```text
-high >= low
-
-low <= open <= high
-when values are present
-
-low <= close <= high
-when values are present
-
-volume >= 0
-when semantically appropriate
-
-open_interest >= 0
-when semantically appropriate
-
-valid trading date
-```
-
-Invalid rows must be observable.
-
----
-
-# 42. Cross-Source Validation
-
-Where the same market data exists from another provider, optionally support validation.
-
-Example:
-
-```text
-AKShare daily close
-vs
-internally derived CTP daily close
-```
-
-Calculate differences but do not automatically overwrite one source based solely on mismatch.
-
-Expose discrepancy reports.
-
----
-
-# 43. Provider Priority
-
-AKShare must not automatically override higher-authority data.
-
-Initial suggested priority for Chinese futures:
-
-```text
-Realtime:
-CTP
-
-Internally derived bars:
-CTP-derived
-
-Historical supplemental:
 AKShare
 
-Reference/exchange-public:
-source dependent
-```
+↓
 
-Final authority rules should be configured explicitly.
+AkshareClient
 
----
+↓
 
-# 44. Data Provenance in API
+FuturesMinuteBarEndpointAdapter
 
-Where historical data may come from different providers, API output should optionally expose:
+↓
 
-```text
-provider
-source
-```
+Normalizer
 
-Example concept:
+↓
 
-```json
-{
-  "instrument_id": 10001,
-  "date": "2026-09-04",
-  "close": 22150,
-  "provider": "AKSHARE",
-  "source": "SINA"
-}
-```
+HistoricalDataBatch(interval=1m)
 
-Do not pretend provider origin is irrelevant.
+↓
 
----
+Historical Ingestion Service
 
-# 45. Scheduler
+├── QuestDB historical_bars
 
-Implement scheduled collection without introducing heavyweight infrastructure.
+├── Raw Parquet/ZSTD archive
 
-Preferred:
+└── PostgreSQL ingestion metadata
 
-```text
-existing project scheduler
-```
+FastAPI queries stored canonical data:
 
-or a simple dedicated Python scheduler/service.
 
-Acceptable alternatives include:
 
-```text
-systemd timer
-cron
-lightweight in-process scheduler
-```
+GET /v1/bars
 
-Do NOT introduce:
+↓
 
-```text
-Celery
-Kafka
-RabbitMQ
-Redis
-```
+QuestDB / historical storage
 
-solely for AKShare scheduling.
+↓
 
----
+stored bars
 
-# 46. Job Types
+FastAPI MUST NOT call AKShare synchronously.
 
-Support jobs such as:
+3.2 Best-Effort Realtime Quote Path
 
-```text
-daily futures update
+AKShare
 
-historical backfill
+↓
 
-reference-data refresh
+AkshareClient
 
-inventory refresh
+↓
 
-position/ranking refresh
+Realtime Quote Endpoint Adapter
 
-validation job
-```
+↓
 
-Each job must have a unique job identity and observable status.
+AkshareQuoteNormalizer
 
----
+↓
 
-# 47. Scheduling Must Be Dataset-Specific
-
-Do not run every dataset every minute.
-
-Example conceptual cadence:
-
-```text
-contract/reference metadata
-→ daily or less often
-
-daily bars
-→ after market close
-
-inventory
-→ according to publication schedule
-
-historical backfill
-→ on demand
-```
-
-Cadence must be configurable.
-
----
-
-# 48. Backfill Mode
-
-Provide an explicit historical backfill workflow.
-
-Conceptually:
-
-```bash
-python -m providers.akshare.backfill \
-  --dataset futures_daily \
-  --instrument SHFE.zn2610 \
-  --start 2020-01-01 \
-  --end 2026-09-04
-```
-
-Exact CLI may differ.
-
----
-
-# 49. Incremental Update Mode
-
-Normal operation should avoid repeatedly downloading entire history where the endpoint supports narrower requests.
-
-Conceptually determine:
-
-```text
-latest stored canonical date
-        ↓
-request missing range
-        ↓
-ingest
-```
-
-If a specific AKShare endpoint only returns full history, handle idempotency correctly instead.
-
----
-
-# 50. Request Throttling
-
-Implement provider-wide and endpoint-specific throttling.
-
-Do not issue uncontrolled loops such as:
-
-```python
-for every instrument:
-    call immediately
-```
-
-without pacing.
-
-Configuration should support:
-
-```text
-minimum request interval
-
-maximum concurrent requests
-
-endpoint-specific cooldown
-
-retry limit
-```
-
----
-
-# 51. Concurrency
-
-Do not assume more concurrency is always better.
-
-AKShare calls are often wrappers around external public endpoints.
-
-Use conservative bounded concurrency.
-
-Initial default should favor:
-
-```text
-reliability
-```
-
-over maximum download speed.
-
----
-
-# 52. Retry Policy
-
-Retry transient failures.
-
-Examples:
-
-```text
-connection reset
-timeout
-temporary upstream failure
-HTTP transient error
-```
-
-Use:
-
-```text
-bounded retry count
-exponential backoff
-jitter
-```
-
-Do not retry indefinitely.
-
----
-
-# 53. Permanent Failure
-
-Do not repeatedly retry:
-
-```text
-invalid symbol
-unsupported endpoint
-schema mismatch
-invalid parameters
-mapping failure
-```
-
-as if they were transient network errors.
-
-Classify errors.
-
----
-
-# 54. Error Classification
-
-Define errors such as:
-
-```text
-TransientProviderError
-PermanentProviderError
-SchemaError
-MappingError
-ValidationError
-EmptyDatasetError
-RateLimitError
-```
-
-Reuse project-wide error models where possible.
-
----
-
-# 55. Empty Response Semantics
-
-An empty DataFrame does not always mean:
-
-```text
-valid zero-row result
-```
-
-It may mean:
-
-```text
-invalid symbol
-upstream unavailable
-non-trading date
-endpoint change
-```
-
-Each adapter must explicitly define how an empty response is interpreted.
-
-Do not silently mark all empty responses successful.
-
----
-
-# 56. Provider Health
-
-Expose AKShare provider health independently.
-
-Conceptual state:
-
-```text
-AVAILABLE
-DEGRADED
-UNAVAILABLE
-```
-
-Health should consider:
-
-```text
-recent successful request
-recent failure rate
-schema failures
-last successful fetch
-```
-
-Do not use socket-oriented concepts such as `CONNECTED` where they do not make sense.
-
----
-
-# 57. Metrics
-
-Add metrics such as:
-
-```text
-akshare_requests_total
-
-akshare_requests_failed_total
-
-akshare_request_latency_seconds
-
-akshare_rows_received_total
-
-akshare_rows_normalized_total
-
-akshare_rows_rejected_total
-
-akshare_schema_errors_total
-
-akshare_mapping_errors_total
-
-akshare_retries_total
-
-akshare_last_success_timestamp
-
-akshare_ingestion_runs_total
-
-akshare_ingestion_failures_total
-```
-
-Prefer generic provider labels if the Phase 09 metrics architecture supports them.
-
-Example:
-
-```text
-provider_requests_total{provider="akshare"}
-```
-
----
-
-# 58. Dataset-Level Metrics
-
-Where useful expose:
-
-```text
-provider_rows_received_total{
-    provider="akshare",
-    dataset="futures_daily"
-}
-```
-
-Avoid unbounded labels such as individual instrument symbols if they create excessive metric cardinality.
-
----
-
-# 59. Logging
-
-Structured logs must include:
-
-```text
-provider=AKSHARE
-dataset
-endpoint
-fetch_id
-duration
-row_count
-status
-```
-
-Never log full DataFrames at INFO.
-
-Never log every row.
-
----
-
-# 60. Configuration
-
-Add:
-
-```yaml
-providers:
-
-  akshare:
-
-    enabled: true
-
-    historical:
-      enabled: true
-
-    reference:
-      enabled: true
-
-    best_effort_quotes:
-      enabled: false
-
-    rate_limit:
-      max_concurrency: 2
-      min_interval_ms: 500
-
-    retry:
-      max_attempts: 3
-
-    raw_archive:
-      enabled: true
-```
-
-Exact configuration format should follow existing project conventions.
-
----
-
-# 61. AKShare Version Pinning
-
-Pin AKShare in the Python dependency configuration.
-
-Do not deploy production code against:
-
-```text
-unbounded latest version
-```
-
-without lockfile/version control.
-
-Record the active AKShare package version in ingestion lineage.
-
----
-
-# 62. Dependency Isolation
-
-AKShare must be an optional Python dependency.
-
-The following must continue working without AKShare installed:
-
-```text
-C++ build
-
-CTP provider
-
-IBKR provider
-
-FastAPI core where AKShare is disabled
-
-synthetic mode
-```
-
-If AKShare provider is enabled but the package is missing:
-
-```text
-fail with clear provider-specific error
-```
-
-not a cryptic global startup failure.
-
----
-
-# 63. Docker
-
-The AKShare worker may run in a dedicated container.
-
-Conceptually:
-
-```text
-docker-compose:
-
-questdb
-postgres
-fastapi
-akshare-worker
-```
-
-CTP may continue on the host if required.
-
-The AKShare worker must not require CTP SDK libraries.
-
----
-
-# 64. FastAPI Integration
-
-Expose historical/reference retrieval through existing FastAPI APIs rather than creating an independent AKShare web API.
-
-Example:
-
-```text
-GET /v1/bars/...
-```
-
-should continue operating on canonical storage.
-
-The client should not need to call:
-
-```text
-/v1/akshare/...
-```
-
-for normal market data.
-
-Provider-specific diagnostics/admin endpoints may exist separately if needed.
-
----
-
-# 65. On-Demand Refresh
-
-If implemented, an admin-level refresh endpoint may request:
-
-```text
-refresh historical dataset
-```
-
-but the normal data API must not trigger AKShare network calls synchronously.
-
-Prohibited:
-
-```text
-GET /v1/bars/zn2610
-        ↓
-call AKShare
-        ↓
-wait
-        ↓
-return
-```
-
-Normal queries should read canonical storage.
-
----
-
-# 66. Best-Effort Realtime Quotes
-
-Real-time AKShare polling is explicitly OUT OF PRIMARY SCOPE for Phase 11.
-
-Do NOT initially connect AKShare polling to the normal realtime quote path.
-
-This avoids creating an implicit assumption that AKShare and CTP have equivalent realtime semantics.
-
----
-
-# 67. Optional Phase 11B
-
-If explicitly requested after Phase 11 acceptance, implement:
-
-```text
-Phase 11B
-AKShare Best-Effort Quote Provider
-```
-
-Possible architecture:
-
-```text
-AKShare Poller
-      ↓
 QuoteSnapshot
-      ↓
-provider-independent Live Event Service
-      ↓
-ZeroMQ
-      ↓
-FastAPI
-```
 
-It must NOT:
+↓
 
-```text
-go through the CTP callback path
-pretend to be tick-by-tick
-pretend to be primary realtime
-```
+Shared Realtime Ingress
 
----
+↓
 
-# 68. Best-Effort Quote Metadata
+Dispatcher
 
-If Phase 11B is implemented, all emitted quotes must contain:
+├── LiveQueue → ZeroMQ → FastAPI cache / WebSocket
 
-```text
-provider = AKSHARE
+└── optional shared persistence path
+
+The quote adapter MUST NOT directly:
+
+
+
+publish to ZeroMQ;
+
+mutate FastAPI cache;
+
+write provider-specific QuestDB rows;
+
+send WebSocket messages.
+
+4. Provider Capabilities
+
+The provider capability model MUST distinguish historical intraday data from realtime market data.
+
+AKShare SHOULD advertise:
+
+
+
+historical_bars = true
+
+intraday_bars = true
+
+reference_data = true
+
+best_effort_quotes = true
+
+realtime_quotes = false
+
+market_depth = false
+
+trade_ticks = false
+
+If a more generic capability representation already exists, use its equivalent.
+
+The critical requirement is:
+
+
+
+best_effort_quotes != realtime_quotes
+
+AKShare MUST NOT claim authoritative low-latency realtime capability.
+
+5. Terminology
+
+The following terms MUST remain distinct.
+
+
+
+Historical 1-minute bar
+
+A completed or published OHLCV observation covering one minute.
+
+Canonical type:
+
+
+
+HistoricalBar
+
+interval = 1m
+
+Best-effort quote
+
+A polled market snapshot from AKShare/public upstream source.
+
+Canonical type:
+
+
+
+QuoteSnapshot
 
 quality = BEST_EFFORT
-```
 
-and where known:
+Trade tick
 
-```text
-upstream_source
-source_timestamp
-fetch_timestamp
-```
+An actual transaction-level market event.
 
-FastAPI must expose this quality state.
+AKShare snapshot polling MUST NOT generate synthetic TradeTick events.
 
----
+6. Provider Identity
 
-# 69. No Silent Fallback
+All AKShare-originated canonical data MUST preserve:
 
-Never implement:
 
-```text
-CTP down
-→ silently show AKShare as if it were CTP
-```
 
-If later fallback is explicitly added, clients must be informed:
+provider = AKSHARE
 
-```json
-{
-  "provider": "AKSHARE",
-  "quality": "BEST_EFFORT",
-  "fallback": true
-}
-```
+Where an underlying upstream source is known, preserve it separately:
 
-Provider transparency is mandatory.
 
----
 
-# 70. Testing Without Internet
+source = akshare
 
-CI must NOT depend on live AKShare endpoints.
+upstream_source = sina
 
-All normal tests must use:
+or another actual source.
 
-```text
-mocked DataFrames
-fixtures
-recorded schema samples
-fake provider clients
-```
+Do NOT collapse:
 
-Network integration tests must be optional.
 
----
-
-# 71. Client Abstraction
-
-Wrap AKShare itself.
-
-Do not call:
-
-```python
-ak.some_function(...)
-```
-
-from every adapter independently without a test seam.
-
-Preferred:
-
-```python
-class AkshareClient:
-    ...
-```
-
-Adapters depend on this client abstraction.
-
-Tests can replace it with:
-
-```text
-FakeAkshareClient
-```
-
----
-
-# 72. Required Unit Tests
-
-At minimum test:
-
-```text
-provider capabilities
-
-provider health
-
-endpoint registry
-
-historical bar normalization
-
-date normalization
-
-numeric normalization
-
-NaN handling
-
-schema validation
-
-schema drift detection
-
-symbol normalization
-
-instrument mapping
-
-unresolved symbol handling
-
-source lineage generation
-
-fetch_id generation
-
-revision detection
-
-idempotency
-
-retry classification
-
-empty response handling
-```
-
----
-
-# 73. Futures Daily Fixture Tests
-
-Provide representative fixtures for multiple exchanges.
-
-At minimum:
-
-```text
-SHFE
-DCE
-CZCE
-CFFEX
-GFEX
-INE
-```
-
-where supported by the implemented dataset.
-
-Do not assume all exchanges use identical symbol casing or field conventions.
-
----
-
-# 74. Historical Idempotency Test
-
-Execute the same normalized dataset twice.
-
-Expected:
-
-```text
-raw archives:
-2 fetch versions may exist
-
-canonical bars:
-1 logical bar per
-provider/instrument/interval/bar_start
-unless revision policy retains explicit versions
-```
-
-No uncontrolled duplicates.
-
----
-
-# 75. Historical Revision Test
-
-First fetch:
-
-```text
-2026-09-01
-close = 22000
-```
-
-Second fetch:
-
-```text
-2026-09-01
-close = 22010
-```
-
-Expected:
-
-```text
-revision detected
-
-previous raw fetch retained
-
-new raw fetch retained
-
-canonical latest accepted value = 22010
-```
-
-according to configured revision policy.
-
----
-
-# 76. Mapping Failure Test
-
-Given:
-
-```text
-unknown AKShare symbol
-```
-
-Expected:
-
-```text
-raw data preserved
-canonical row not silently misassigned
-mapping error metric incremented
-ingestion run reflects rejected row
-```
-
----
-
-# 77. Schema Drift Test
-
-Given an endpoint fixture missing a required column:
-
-Expected:
-
-```text
-normalization fails visibly
-
-raw response preserved
-
-canonical database not corrupted
-
-schema error recorded
-```
-
----
-
-# 78. Data Quality Test
-
-Test invalid bars such as:
-
-```text
-high < low
-negative volume
-close > high
-```
-
-Verify they are rejected/quarantined according to existing data-quality policy.
-
----
-
-# 79. PostgreSQL Integration Tests
-
-Test:
-
-```text
-provider registry
-
-provider instrument mapping
-
-ingestion run metadata
-
-reference upsert
-
-revision metadata
-```
-
-Use test database/container infrastructure already present in the project.
-
----
-
-# 80. QuestDB Integration Tests
-
-For historical bars stored in QuestDB verify:
-
-```text
-provider identity
-
-instrument identity
-
-bar timestamp
-
-OHLC
-
-volume
-
-open interest
-
-settlement
-
-idempotent re-ingestion
-```
-
----
-
-# 81. Parquet Tests
-
-Verify raw archive preserves:
-
-```text
-provider-native columns
 
 provider
 
-upstream source
+and:
 
-fetch_id
 
-fetch timestamp
 
-AKShare version
+upstream_source
 
-request parameters
-```
+into one field.
 
-and can be read successfully.
+7. Symbol Mapping
 
----
+All AKShare requests MUST resolve canonical instruments through PostgreSQL provider_instruments.
 
-# 82. DuckDB Tests
+Example:
 
-Verify DuckDB can query AKShare archives by:
 
-```text
+
+canonical:
+
+SHFE.rb2610
+
+
+
+↓
+
+
+
+provider_instruments
+
+
+
+↓
+
+
+
+provider = akshare
+
+provider_symbol = RB2610
+
+The AKShare adapter MUST NOT silently derive:
+
+
+
+rb2610 → RB2610
+
+when no mapping exists.
+
+Unknown mappings MUST:
+
+
+
+be rejected or marked unresolved;
+
+increment a mapping-error metric;
+
+appear in ingestion diagnostics;
+
+not create implicit canonical instruments.
+
+8. Product and Contract Preconditions
+
+A canonical futures contract MUST already exist before an AKShare mapping is accepted.
+
+Required relationship:
+
+
+
+exchanges
+
+↓
+
+products
+
+↓
+
+futures_contracts
+
+↓
+
+provider_instruments
+
+For example:
+
+
+
+SHFE
+
+↓
+
+rb
+
+↓
+
+rb2610
+
+↓
+
+AKShare RB2610
+
+Phase 11B MAY consume the contract synchronization capability created in earlier phases.
+
+It MUST NOT bypass foreign-key constraints or create orphan mappings.
+
+9. AKShare Client Abstraction
+
+All network interaction with AKShare MUST pass through an injectable client abstraction.
+
+Example:
+
+
+
+AkshareClient
+
+Tests MUST be able to substitute:
+
+
+
+FakeAkshareClient
+
+or equivalent.
+
+Generic ingestion, FastAPI, normalization and repository layers MUST NOT import AKShare directly.
+
+Endpoint-specific behavior MUST remain behind AKShare adapters.
+
+10. Endpoint Adapter Registry
+
+AKShare integration SHOULD continue using an endpoint-adapter registry.
+
+Example conceptual registry:
+
+
+
+futures_daily
+
+futures_1m
+
+futures_realtime_quote
+
+inventory
+
+warehouse
+
+positions
+
+contracts
+
+Each endpoint adapter defines:
+
+
+
+AKShare function;
+
+supported input parameters;
+
+expected columns;
+
+symbol format;
+
+normalization strategy;
+
+empty-response semantics;
+
+rate-limit policy;
+
+upstream source metadata.
+
+Avoid a giant:
+
+
+
+download_everything()
+
+implementation.
+
+Part A — AKShare 1-Minute Historical Bars
+
+11. 1-Minute Historical Capability
+
+AKShare MUST support futures 1-minute bar ingestion where the selected upstream endpoint provides such data.
+
+This is historical/intraday ingestion.
+
+It is NOT considered realtime tick ingestion.
+
+Canonical interval:
+
+
+
+1m
+
+12. CLI — One-Shot 1-Minute Fetch
+
+Provide an explicit CLI command.
+
+Preferred canonical form:
+
+
+
+akshare-worker fetch futures-1m \
+
+--instrument SHFE.rb2610
+
+Provider-symbol form MAY also be supported:
+
+
+
+akshare-worker fetch futures-1m \
+
+--symbol RB2610 \
+
+--exchange SHFE
+
+Docker example:
+
+
+
+docker compose --profile akshare run --rm \
+
+akshare-worker fetch futures-1m \
+
+--instrument SHFE.rb2610
+
+The CLI MUST clearly identify the requested dataset as 1-minute bars.
+
+Do not overload a generic ambiguous command such as:
+
+
+
+fetch RB2610
+
+without dataset context.
+
+13. Date-Range Fetching
+
+Where the upstream endpoint supports date ranges, Phase 11B MUST expose them.
+
+Example:
+
+
+
+akshare-worker fetch futures-1m \
+
+--instrument SHFE.rb2610 \
+
+--start 2026-08-01 \
+
+--end 2026-09-05
+
+The worker MUST validate:
+
+
+
+start <= end
+
+and reject malformed ranges.
+
+14. Upstream Lookback and Row Limits
+
+AKShare or its upstream source may impose:
+
+
+
+maximum row counts;
+
+maximum lookback periods;
+
+limited historical depth;
+
+endpoint-specific pagination;
+
+truncated results.
+
+The adapter MUST NOT assume an unlimited date range.
+
+If the endpoint imposes limits, implementation MUST:
+
+
+
+detect or document the limit;
+
+chunk requests where possible;
+
+merge chunks;
+
+deduplicate overlaps;
+
+report incomplete coverage;
+
+never silently claim a truncated result is complete.
+
+15. Historical Backfill
+
+Provide resumable 1-minute backfill.
+
+Example:
+
+
+
+akshare-worker backfill futures-1m \
+
+--instrument SHFE.rb2610 \
+
+--start 2026-01-01 \
+
+--end 2026-09-05
+
+Backfill MUST support:
+
+
+
+bounded request windows;
+
+progress checkpoints;
+
+retries;
+
+resume after interruption;
+
+rate limiting;
+
+ingestion-run metadata;
+
+idempotent re-execution.
+
+16. Backfill State
+
+Backfill progress SHOULD persist enough state to resume safely.
+
+At minimum record:
+
+
+
 provider
 
 dataset
 
 instrument
 
-date range
-```
+requested_start
 
-Example concept:
+requested_end
 
-```sql
-SELECT *
-FROM read_parquet('data/raw/provider=akshare/**/*.parquet')
-WHERE ...
-```
+completed_until
 
----
+status
 
-# 83. Existing System Regression
+attempt_count
 
-Phase 11 must not break:
+last_error
 
-```text
-CTP realtime ingestion
+updated_at
 
-IBKR if Phase 10 exists
+This MAY use the existing:
 
-QuestDB QWP pipeline
 
-QWP DEDUP
 
-ZeroMQ live feed
+provider_ingestion_runs
 
-FastAPI WebSocket
+model where suitable.
 
-PostgreSQL metadata
+17. Canonical 1-Minute Bar Schema
 
-Parquet existing archive
+Normalized 1-minute bars MUST contain or map to:
 
-DuckDB existing research layer
 
-bar generation
 
-continuous contracts
+provider
 
-monitoring
+exchange
 
-data quality
-```
+instrument_id
 
----
+provider_symbol
 
-# 84. Performance
+interval
 
-AKShare is not a low-latency provider.
+bar_start
 
-Do not optimize it using the same targets as CTP callbacks.
+trading_day
 
-Performance priorities are:
 
-```text
-reasonable throughput
-bounded concurrency
-memory safety
-idempotency
-reliability
-observable progress
-```
 
-Historical bulk loads should process data in batches rather than one database write per row.
+open
 
----
+high
 
-# 85. Memory Management
+low
 
-Large DataFrames must not be retained indefinitely.
+close
 
-For large backfills:
 
-```text
-fetch
-normalize
-persist/archive
-release
-```
 
-in bounded batches where practical.
+volume
 
-Avoid accumulating years of all instruments into one in-memory DataFrame.
+open_interest
 
----
+turnover
 
-# 86. Backfill Progress
+settlement
 
-Long backfills must expose progress.
+
+
+source
+
+upstream_source
+
+fetched_at
+
+Required canonical values:
+
+
+
+provider = AKSHARE
+
+interval = 1m
+
+Fields unavailable upstream MUST remain NULL.
+
+Do not fabricate:
+
+
+
+open interest;
+
+turnover;
+
+settlement;
+
+bid/ask;
+
+exchange-native sequence IDs.
+
+18. Timestamp Semantics
+
+bar_start MUST represent the start timestamp of the one-minute interval.
+
+Chinese futures local timestamps MUST be interpreted in:
+
+
+
+Asia/Shanghai
+
+before conversion into canonical UTC storage representation if the existing schema stores UTC.
+
+Timezone conversion MUST be explicit and tested.
+
+19. Trading Day Semantics
+
+Chinese futures night sessions MUST be handled correctly.
+
+Do NOT infer:
+
+
+
+trading_day = calendar_date(bar_start)
+
+for all bars.
 
 Example:
 
-```text
-requested instruments
-completed instruments
-failed instruments
-rows fetched
-rows written
-current dataset
-elapsed time
-```
 
-Partial backfill failure must be restartable.
 
----
+2026-09-04 21:15 Asia/Shanghai
 
-# 87. Resume Support
+may belong to a later futures trading day.
 
-A failed backfill should be able to resume without restarting successfully completed work.
+The implementation SHOULD use the existing:
 
-Use:
 
-```text
-ingestion-run metadata
-canonical storage state
-raw archive state
-```
 
-rather than relying solely on an in-memory counter.
+exchange calendar;
 
----
+product trading sessions;
 
-# 88. CLI
+trading-day model.
 
-Provide an operational CLI or equivalent command surface.
+If authoritative trading-day information is unavailable from the upstream response, derivation MUST use documented exchange-session rules rather than naive local-date conversion.
 
-Conceptual commands:
+20. Historical Bar Identity
 
-```text
-akshare-provider health
+Canonical historical identity MUST remain separate from realtime event identity.
 
-akshare-provider list-datasets
+Recommended logical identity:
 
-akshare-provider fetch ...
 
-akshare-provider backfill ...
 
-akshare-provider refresh-reference ...
+provider
 
-akshare-provider unresolved-symbols
-```
+exchange
 
-Exact CLI framework should follow existing Python tooling.
+instrument_id
 
----
+interval
 
-# 89. Dataset Discovery
+bar_start
 
-Do not automatically enable every AKShare endpoint found in the library.
+or the equivalent existing historical-bar key.
 
-Only endpoints explicitly registered in:
+Do NOT use:
 
-```text
-EndpointRegistry
-```
 
-are production-supported.
 
-This prevents an AKShare package update from unexpectedly expanding production behavior.
+producer_id + seq
 
----
+as historical bar identity.
 
-# 90. Endpoint Stability Classification
+Those fields belong to realtime transport semantics.
 
-Optionally classify endpoints:
+21. Historical Idempotency
 
-```text
-STABLE
-EXPERIMENTAL
-DISABLED
-```
+Repeated ingestion of the same unchanged canonical 1-minute bar MUST NOT create uncontrolled duplicates.
 
-Experimental adapters must not be scheduled by default.
+For example:
 
----
 
-# 91. Documentation
 
-Create:
+AKSHARE
 
-```text
-docs/providers/akshare.md
-```
+SHFE
 
-Document:
+rb2610
 
-```text
-provider purpose
+1m
 
-supported datasets
+2026-09-05T01:01:00Z
 
-AKShare package version
+fetched twice with identical values should remain one canonical accepted bar.
 
-endpoint registry
+Raw fetch archives may preserve both fetch executions independently.
 
-upstream sources
+22. Revision Detection
 
-canonical mappings
+If the same logical bar is fetched later with changed values:
 
-scheduler
 
-backfill
 
-rate limiting
+same:
 
-revision policy
+provider
 
-raw archive format
+exchange
 
-troubleshooting
+instrument_id
 
-known limitations
-```
+interval
 
----
+bar_start
 
-# 92. Update Existing Documentation
 
-Update:
 
-```text
-REQUIREMENTS.md
-ROADMAP.md
-README.md
-CHANGELOG.md
-docs/providers.md
-docs/data-model.md
-docs/architecture.md
-```
+changed:
 
-Do not rewrite unrelated documentation.
+open/high/low/close
 
----
+volume
 
-# 93. Explicit Non-Scope
+open_interest
 
-Do NOT implement in Phase 11:
+turnover
 
-```text
-primary realtime AKShare feed
+settlement
 
-high-frequency polling
+the system MUST detect a revision.
 
-tick-by-tick reconstruction
+Required behavior:
 
-market depth
 
-automatic CTP fallback
 
-automatic IBKR fallback
+preserve original raw fetch;
 
-provider arbitration
+preserve new raw fetch;
 
-trading API
+increment revision count;
 
-orders
+apply the existing canonical revision policy;
 
-positions
+expose the latest accepted canonical version;
 
-accounts
+do not silently discard the discrepancy.
 
-Kafka
+23. Raw Intraday Archive
 
-Redis Streams
+Every successful 1-minute upstream fetch SHOULD be archived immutably.
 
-Celery
+Recommended:
 
-RabbitMQ
 
-Kubernetes
 
-every available AKShare endpoint
-```
+Parquet + ZSTD
 
----
+Conceptual layout:
 
-# 94. Phase 11 Definition of Done
 
-Phase 11 is complete when all of the following are true:
 
-1. AKShare exists as a registered Provider.
-2. AKShare is implemented in Python.
-3. AKShare runs independently from the C++ realtime core.
-4. Historical provider interface is implemented.
-5. Reference provider interface is implemented.
-6. Provider capabilities are correct.
-7. Supported datasets are explicitly registered.
-8. Historical futures bars can be fetched.
-9. Provider-native data is normalized to canonical models.
-10. AKShare symbols resolve through canonical InstrumentId mappings.
-11. Unresolved mappings are observable.
-12. Source lineage is preserved.
-13. AKShare library version is recorded.
-14. Fetch operations receive stable fetch IDs.
-15. Raw responses are archived immutably.
-16. Canonical historical ingestion is idempotent.
-17. Historical revisions are detectable.
-18. Schema drift is detected.
-19. Invalid data cannot silently corrupt canonical storage.
-20. Rate limiting exists.
-21. Retry logic exists.
-22. Retry behavior is bounded.
-23. Scheduled collection works.
-24. Backfill works.
-25. Backfill is resumable.
-26. PostgreSQL reference ingestion works.
-27. QuestDB historical bar ingestion works where applicable.
-28. Parquet raw archive works.
-29. DuckDB can query AKShare archives.
-30. Provider health is exposed.
-31. Provider metrics exist.
-32. CI tests require no external AKShare network access.
-33. Existing Phase 0–10 functionality remains operational.
-34. CTP remains the primary Chinese futures realtime provider.
-35. AKShare realtime polling is NOT enabled by default.
-36. No automatic provider fallback exists.
-37. Documentation is complete.
-38. CHANGELOG is updated.
+raw/
 
----
+provider=akshare/
 
-# 95. Required Codex Work Process
+dataset=futures_1m/
 
-Before implementation:
+exchange=SHFE/
 
-1. Read `REQUIREMENTS.md`.
-2. Read `ROADMAP.md`.
-3. Read `docs/providers.md`.
-4. Read `docs/providers/akshare.md` if already present.
-5. Read this Phase 11 specification completely.
-6. Inspect Phase 09 provider abstractions.
-7. Inspect PostgreSQL provider mappings.
-8. Inspect canonical bar models.
-9. Inspect QuestDB bar schemas.
-10. Inspect raw Parquet archive architecture.
-11. Inspect DuckDB research utilities.
-12. Inspect scheduler/maintenance infrastructure.
-13. Run the complete existing test suite.
-14. Identify reusable provider-independent services.
-15. Identify any conflict with the installed AKShare version.
-16. Produce a concise implementation plan.
-17. List files to create.
-18. List files to modify.
-19. List migrations.
-20. List supported AKShare endpoints proposed for initial implementation.
+symbol=RB2610/
 
-Only then begin writing production code.
+fetch_id=<uuid>/
 
----
+data.parquet
 
-# 96. Endpoint Verification Rule
+metadata.json
 
-Before implementing any AKShare endpoint:
+Exact physical layout may follow the existing archive architecture.
 
-1. inspect the AKShare version pinned by the project
-2. verify the function exists in that version
-3. inspect its current parameters
-4. inspect returned columns
-5. identify the upstream source where possible
-6. create a fixture representing the observed schema
-7. implement the adapter against that verified schema
+24. Raw Fetch Metadata
 
-Do NOT implement AKShare calls from memory.
+Each raw 1-minute fetch SHOULD preserve:
 
-Do NOT invent undocumented parameters.
 
----
 
-# 97. Initial Delivery Strategy
+fetch_id
 
-Do not attempt all datasets simultaneously.
+provider
 
-Recommended order:
+dataset
 
-```text
-Step 1
-AKShare provider shell
-+
-client abstraction
-+
-health
-+
-endpoint registry
-
-Step 2
-instrument/symbol resolution
-
-Step 3
-one futures daily historical adapter
-
-Step 4
-raw archive
-+
-lineage
-
-Step 5
-canonical bar persistence
-
-Step 6
-idempotency/revisions
-
-Step 7
-additional futures exchanges
-
-Step 8
-reference datasets
-
-Step 9
-inventory/position datasets
-
-Step 10
-scheduler
-
-Step 11
-backfill/resume
-
-Step 12
-DuckDB integration
-
-Step 13
-metrics/data quality
-
-Step 14
-regression tests
-
-Step 15
-documentation
-```
-
-Keep tests passing after each significant step.
-
----
-
-# 98. No Blind Endpoint Expansion
-
-After the first endpoint works, do not automatically copy/paste adapters for dozens of AKShare APIs.
-
-For each additional endpoint define:
-
-```text
-business purpose
+AKShare function
 
 upstream source
 
-canonical destination
+provider symbol
 
-refresh frequency
+canonical instrument
 
-schema
+request parameters
 
-identity
+requested date range
 
-revision behavior
+fetch timestamp
 
-data-quality rules
-```
+AKShare package version
 
-before enabling it.
+normalizer version
 
----
+schema version
 
-# 99. Architectural Success Criterion
+row count
 
-Before Phase 11:
+optional content hash
 
-```text
-AKShare
+Raw archive lineage MUST be sufficient to reproduce or investigate ingestion behavior.
+
+25. Canonical Storage
+
+Normalized 1-minute bars MUST be persisted to the existing canonical historical bar store.
+
+Current expected QuestDB table:
+
+
+
+historical_bars
+
+Rows MUST be queryable by:
+
+
+
+provider
+
+exchange
+
+instrument_id
+
+interval
+
+bar_start
+
+trading_day
+
+Example:
+
+
+
+provider = AKSHARE
+
+exchange = SHFE
+
+instrument_id = rb2610
+
+interval = 1m
+
+26. QuestDB Integration
+
+Phase 11B MUST reuse the existing historical ingestion/repository abstraction.
+
+AKShare endpoint adapters MUST NOT directly implement custom QuestDB writes.
+
+Preferred flow:
+
+
+
+AKShare adapter
+
+↓
+
+HistoricalDataBatch
+
+↓
+
+Historical ingestion service
+
+↓
+
+QuestDB repository
+
+Provider-specific logic ends before the storage repository.
+
+27. FastAPI 1-Minute Query
+
+The existing endpoint:
+
+
+
+GET /v1/bars/{symbol}
+
+MUST support:
+
+
+
+interval=1m
+
+provider=akshare
+
+Example:
+
+
+
+curl \
+
+'http://127.0.0.1:8000/v1/bars/SHFE.rb2610?interval=1m&provider=akshare'
+
+Expected data source:
+
+
+
+QuestDB historical_bars
+
+FastAPI MUST NOT call AKShare during this GET request.
+
+28. FastAPI Query Flow
+
+Correct:
+
+
+
+Client
+
+↓
+
+FastAPI
+
+↓
+
+Historical Repository
+
+↓
+
+QuestDB
+
+↓
+
+stored bars
+
+Incorrect:
+
+
+
+Client
+
+↓
+
+FastAPI
+
+↓
+
+AKShare network request
+
+↓
+
+wait for public website
+
+↓
+
+response
+
+The second design is prohibited.
+
+29. Range Filtering API
+
+Existing:
+
+
+
+start_day
+
+end_day
+
+MUST work with AKShare 1-minute bars.
+
+Example:
+
+
+
+/v1/bars/SHFE.rb2610
+
+?interval=1m
+
+&provider=akshare
+
+&start_day=20260901
+
+&end_day=20260905
+
+Phase 11B MAY introduce:
+
+
+
+start_ts
+
+end_ts
+
+for intraday precision if justified.
+
+Existing API compatibility MUST remain intact.
+
+30. Historical Validation
+
+1-minute ingestion MUST validate at least:
+
+
+
+timestamp parseability;
+
+timezone validity;
+
+timestamp ordering;
+
+duplicate logical keys;
+
+missing required OHLC fields;
+
+non-numeric data;
+
+invalid numeric sentinel values;
+
+negative volume where invalid;
+
+schema changes;
+
+trading-day derivation;
+
+interval correctness.
+
+31. OHLC Validation
+
+Minimum consistency checks:
+
+
+
+high >= open
+
+high >= close
+
+high >= low
+
+
+
+low <= open
+
+low <= close
+
+Equivalent compact logic:
+
+
+
+high >= max(open, close, low)
+
+low <= min(open, close, high)
+
+Malformed rows SHOULD be rejected or quarantined.
+
+Do not silently modify market prices to force them to pass validation unless a documented normalization rule exists.
+
+32. Missing Values
+
+Missing optional fields MUST remain NULL.
+
+Examples:
+
+
+
+open_interest = NULL
+
+turnover = NULL
+
+settlement = NULL
+
+Do NOT substitute:
+
+
+
+0
+
+unless zero is actually reported and semantically valid.
+
+33. Schema Drift
+
+AKShare/public endpoint schemas may change.
+
+Each 1-minute endpoint adapter MUST define:
+
+
+
+required columns;
+
+optional columns;
+
+known aliases if explicitly documented;
+
+expected data types.
+
+If required fields disappear or semantics become ambiguous:
+
+
+
+fail visibly;
+
+increment schema-error metrics;
+
+mark provider or dataset degraded;
+
+do not guess.
+
+34. Empty Response Semantics
+
+An empty DataFrame/list MUST have endpoint-specific handling.
+
+Possible interpretations include:
+
+
+
+no data in requested range;
+
+contract not listed yet;
+
+expired contract;
+
+market closed;
+
+upstream unavailable;
+
+invalid symbol;
+
+changed schema.
+
+The adapter MUST NOT universally treat empty output as success.
+
+35. Intraday Refresh
+
+Phase 11B MAY support periodic refresh of recent 1-minute bars.
+
+Example:
+
+
+
+refresh recent bars every 5 minutes
+
+The refresh job MUST remain an intraday historical polling job.
+
+It MUST NOT be presented as tick-level realtime.
+
+36. Refresh Overlap
+
+Periodic refresh SHOULD intentionally overlap recent bars.
+
+Example:
+
+
+
+each refresh re-fetch last 10–30 minutes
+
+This helps detect upstream revisions.
+
+Because ingestion is idempotent and revision-aware, overlapping refreshes MUST be safe.
+
+Part B — AKShare Best-Effort Realtime Quotes
+
+37. Realtime Quote Objective
+
+AKShare MAY provide best-effort quote snapshots for:
+
+
+
+development;
+
+monitoring;
+
+cross-provider comparison;
+
+fallback observation by human operators;
+
+validation of provider-independent realtime infrastructure.
+
+It MUST NOT become the authoritative production realtime futures feed.
+
+38. Realtime Quality
+
+Every AKShare live quote MUST expose:
+
+
+
+quality = BEST_EFFORT
+
+Do NOT label it:
+
+
+
+REALTIME
+
+EXCHANGE_DIRECT
+
+AUTHORITATIVE
+
+unless the actual source semantics later justify those terms.
+
+39. Quote Event Type
+
+AKShare realtime polling MUST emit:
+
+
+
+QuoteSnapshot
+
+unless the upstream endpoint explicitly provides another trustworthy market-data event type.
+
+It MUST NOT synthesize:
+
+
+
+TradeTick
+
+BidAskTick
+
+DepthUpdate
+
+from price differences between polls.
+
+40. No Trade Reconstruction
+
+Example:
+
+
+
+poll #1 last_price = 3500
+
+poll #2 last_price = 3501
+
+This means only:
+
+
+
+latest observed snapshot changed
+
+It does NOT prove:
+
+
+
+trade occurred at 3501
+
+Therefore no TradeTick may be generated.
+
+41. Realtime Runtime Isolation
+
+AKShare quote polling MUST run outside FastAPI.
+
+Recommended:
+
+
+
+akshare-worker serve-quotes
+
+or a dedicated:
+
+
+
+akshare-quotes
+
+service.
+
+It MUST NOT run in:
+
+
+
+FastAPI request handlers;
+
+WebSocket handlers;
+
+CTP callbacks;
+
+IBKR callbacks;
+
+persistence-writer threads.
+
+42. Polling Configuration
+
+Required configuration:
+
+
+
+AKSHARE_REALTIME_ENABLED
+
+AKSHARE_QUOTE_POLL_INTERVAL_SECONDS
+
+AKSHARE_QUOTE_REQUEST_TIMEOUT_SECONDS
+
+AKSHARE_QUOTE_MAX_CONCURRENCY
+
+AKSHARE_QUOTE_BATCH_SIZE
+
+AKSHARE_QUOTE_STALE_AFTER_SECONDS
+
+AKSHARE_REALTIME_PERSIST
+
+Recommended default:
+
+
+
+AKSHARE_REALTIME_ENABLED=false
+
+The backend MUST remain fully operational with AKShare realtime disabled.
+
+43. Polling Frequency
+
+Initial quote polling SHOULD be conservative.
+
+Recommended starting range:
+
+
+
+3–5 seconds
+
+Do not assume sub-second updates.
+
+A minimum polling interval SHOULD be enforced.
+
+Unbounded high-frequency polling of public upstream endpoints is prohibited.
+
+44. Batch Quote Fetches
+
+When supported, endpoint adapters SHOULD batch multiple symbols.
+
+Preferred:
+
+
+
+one request
+
+→ RB2610
+
+→ ZN2610
+
+→ CU2610
+
+rather than one HTTP request per contract.
+
+Batch logic belongs inside the endpoint adapter.
+
+45. Subscription Model
+
+AKShare quote polling MUST consume the shared canonical subscription representation.
+
+Example:
+
+
+
+Subscription {
+
+instrument_id = SHFE.rb2610
+
+market_data_kind = QUOTE
+
+}
+
+It MUST resolve provider-native symbols using:
+
+
+
+provider_instruments
+
+46. Realtime Normalization
+
+Canonical QuoteSnapshot SHOULD support:
+
+
+
+provider
+
+event_type
+
+instrument_id
+
+exchange
+
+instrument
+
+quality
+
+
+
+event_ts
+
+recv_ts
+
+timestamp_source
+
+
+
+last_price
+
+volume
+
+turnover
+
+open_interest
+
+
+
+upper_limit_price
+
+lower_limit_price
+
+
+
+bid_price1
+
+bid_volume1
+
+ask_price1
+
+ask_volume1
+
+
+
+source
+
+upstream_source
+
+
+
+producer_id
+
+seq
+
+Only populate fields supplied with reliable semantics.
+
+Missing depth fields remain NULL.
+
+47. Realtime Timestamps
+
+recv_ts MUST always be populated.
+
+If upstream provides a trustworthy event timestamp:
+
+
+
+event_ts = upstream time
+
+timestamp_source = UPSTREAM
+
+Otherwise:
+
+
+
+event_ts = recv_ts
+
+timestamp_source = RECEIVE_TIME
+
+Do not fabricate exchange-level timing precision.
+
+48. Realtime Stable Identity
+
+Each running AKShare realtime producer gets a stable per-process:
+
+
+
+producer_id
+
+Each emitted quote receives monotonically increasing:
+
+
+
+seq
+
+Transport identity remains:
+
+
+
+provider
+
+producer_id
+
+seq
+
+event_ts
+
+Retries MUST preserve original identity.
+
+New process run → new producer_id.
+
+49. Feed Duplicates
+
+Identical consecutive polled snapshots are separate feed observations.
+
+Example:
+
+
+
+12:00:01 last_price = 3500
+
+12:00:05 last_price = 3500
+
+These MUST NOT be considered transport duplicates merely because all market fields match.
+
+Live freshness paths MAY coalesce repeated snapshots if the generic live pipeline already supports that policy.
+
+50. Transport Duplicates
+
+The same canonical event replayed due to transport retry:
+
+
+
+same provider
+
+same producer_id
+
+same seq
+
+same event_ts
+
+MUST remain deduplicatable through the existing persistence semantics.
+
+51. Shared Realtime Ingress
+
+AKShare normalized QuoteSnapshot events MUST enter the provider-independent realtime ingress.
+
+Correct:
+
+
+
+AKShare adapter
+
+↓
+
+QuoteSnapshot
+
+↓
+
+shared ingress
+
+↓
+
+Dispatcher
+
+↓
+
+ZeroMQ / persistence
+
+Incorrect:
+
+
+
+AKShare adapter
+
+↓
+
+FastAPI cache directly
+
+52. Provider-Aware Quote Cache
+
+The same canonical instrument may simultaneously have:
+
+
+
+CTP SHFE.rb2610
+
+AKSHARE SHFE.rb2610
+
+IBKR SHFE.rb2610
+
+These MUST coexist.
+
+Recommended key:
+
+
+
+(provider, exchange, instrument)
+
+or equivalent provider-aware identity.
+
+One provider MUST NOT overwrite another provider's observation.
+
+53. Quote API
+
+FastAPI MUST support explicit AKShare quote queries.
+
+Example:
+
+
+
+GET /v1/quotes/SHFE.rb2610?provider=akshare
+
+The returned object MUST expose:
+
+
+
+provider = AKSHARE
+
+quality = BEST_EFFORT
+
+FastAPI MUST read from the live cache.
+
+It MUST NOT synchronously fetch AKShare.
+
+54. Provider-Omitted Queries
+
+For:
+
+
+
+GET /v1/quotes/SHFE.rb2610
+
+Phase 11B MUST NOT silently use AKShare merely because another provider is unavailable.
+
+Existing deterministic default-provider behavior may remain.
+
+Automatic fallback is explicitly out of scope.
+
+55. No Provider Arbitration
+
+Phase 11B MUST NOT implement:
+
+
+
+CTP missing → use AKShare automatically
+
+IBKR missing → use AKShare automatically
+
+CTP differs from AKShare → choose one
+
+average provider prices
+
+vote between providers
+
+That belongs to a later provider-selection/arbitration phase.
+
+56. Quote Staleness
+
+AKShare quotes MUST expose enough information for staleness detection.
+
+At minimum:
+
+
+
+recv_ts
+
+provider
+
+quality
+
+Recommended configuration:
+
+
+
+AKSHARE_QUOTE_STALE_AFTER_SECONDS
+
+A stale AKShare quote MUST not appear semantically equivalent to a fresh CTP observation.
+
+57. Optional Realtime Persistence
+
+Best-effort AKShare quote persistence MAY be configurable.
+
+Example:
+
+
+
+AKSHARE_REALTIME_PERSIST=false
+
+If enabled, use the shared generic persistence path.
+
+Do NOT build an AKShare-specific QuestDB writer.
+
+58. Generic Realtime Table Naming
+
+If the realtime persistence table is still named:
+
+
+
+ctp_market_data
+
+Phase 11B MUST document that this name is provider-specific technical debt.
+
+A future provider-neutral name is preferred:
+
+
+
+market_events
+
+quote_snapshots
+
+market_data_events
+
+However Phase 11B MUST NOT perform a risky migration solely for cosmetic naming.
+
+Only migrate if multi-provider correctness requires it.
+
+Part C — Reliability and Operations
+
+59. Error Classification
+
+AKShare operations SHOULD classify errors into:
+
+
+
+TRANSIENT_NETWORK
+
+RATE_LIMIT
+
+UPSTREAM_UNAVAILABLE
+
+SCHEMA_CHANGED
+
+INVALID_RESPONSE
+
+MAPPING_ERROR
+
+INVALID_SYMBOL
+
+PERMANENT
+
+Historical and realtime jobs SHOULD share error classification utilities where appropriate.
+
+60. Retry Policy
+
+Transient failures MUST use bounded exponential backoff with jitter.
+
+Example:
+
+
+
+1s
+
+2s
+
+4s
+
+8s
+
+16s
+
+max 30–60s
+
+No tight retry loops.
+
+Historical batch jobs SHOULD eventually fail visibly after bounded retries.
+
+Realtime pollers SHOULD remain alive and continue future polling attempts.
+
+61. Rate Limiting
+
+AKShare access MUST use conservative request pacing.
+
+The implementation SHOULD support:
+
+
+
+max concurrency
+
+minimum request spacing
+
+endpoint-specific limits
+
+A backfill job MUST NOT starve realtime quote polling.
+
+If needed, separate rate-limit budgets SHOULD be used for:
+
+
+
+historical
+
+reference
+
+realtime
+
+62. Health Model
+
+AKShare provider health SHOULD expose separate sub-status where practical:
+
+
+
+historical
+
+reference
+
+best_effort_realtime
+
+Overall provider states:
+
+
+
+AVAILABLE
+
+DEGRADED
+
+UNAVAILABLE
+
+Example:
+
+
+
+{
+
+"provider": "akshare",
+
+"status": "DEGRADED",
+
+"capabilities": {
+
+"historical_bars": true,
+
+"intraday_bars": true,
+
+"reference_data": true,
+
+"best_effort_quotes": true
+
+},
+
+"historical": {
+
+"last_success": "...",
+
+"last_error": null
+
+},
+
+"realtime": {
+
+"last_success": "...",
+
+"active_subscriptions": 4,
+
+"consecutive_failures": 2
+
+}
+
+}
+
+63. Historical Metrics
+
+Add metrics at minimum:
+
+
+
+akshare_historical_requests_total
+
+akshare_historical_request_failures_total
+
+
+
+akshare_historical_1m_requests_total
+
+akshare_historical_1m_rows_received_total
+
+akshare_historical_1m_rows_written_total
+
+akshare_historical_1m_revisions_total
+
+akshare_historical_1m_schema_errors_total
+
+akshare_historical_1m_mapping_errors_total
+
+akshare_historical_1m_empty_responses_total
+
+akshare_historical_1m_request_latency_seconds
+
+64. Realtime Metrics
+
+Add:
+
+
+
+akshare_quote_requests_total
+
+akshare_quote_request_failures_total
+
+akshare_quote_rows_received_total
+
+akshare_quote_events_emitted_total
+
+akshare_quote_mapping_errors_total
+
+akshare_quote_schema_errors_total
+
+akshare_quote_empty_responses_total
+
+akshare_quote_retries_total
+
+akshare_quote_request_latency_seconds
+
+akshare_quote_poll_duration_seconds
+
+akshare_quote_poll_lag_seconds
+
+akshare_quote_last_success_timestamp
+
+akshare_quote_active_subscriptions
+
+Avoid unbounded per-symbol metric labels unless the monitoring architecture explicitly permits them.
+
+65. Structured Logging
+
+Historical log context SHOULD include:
+
+
+
+provider=akshare
+
+dataset=futures_1m
+
+fetch_id
+
+instrument
+
+provider_symbol
+
+requested_start
+
+requested_end
+
+rows_received
+
+rows_written
+
+revisions
+
+duration
+
+error_class
+
+Realtime logs SHOULD include:
+
+
+
+provider=akshare
+
+component=quote_poller
+
+endpoint
+
+subscription_count
+
+rows_received
+
+events_emitted
+
+duration
+
+error_class
+
+Do not log complete DataFrames during normal operation.
+
+66. Provider Ingestion Runs
+
+Continue using or extend:
+
+
+
+provider_ingestion_runs
+
+Recommended fields:
+
+
+
+id
+
+provider_id
+
+dataset
+
+endpoint
+
+
+
+started_at
+
+completed_at
+
+status
+
+
+
+request_params
+
+
+
+rows_received
+
+rows_normalized
+
+rows_rejected
+
+rows_written
+
+revision_count
+
+
+
+error_class
+
+error_message
+
+
+
+provider_version
+
+schema_version
+
+1-minute jobs MUST be observable here.
+
+67. Version Pinning
+
+The AKShare package version MUST remain pinned.
+
+Every ingestion run SHOULD record the AKShare package version.
+
+Schema changes after package upgrades MUST be testable and traceable.
+
+68. Docker Deployment
+
+AKShare remains an optional profile.
+
+Recommended:
+
+
+
+--profile akshare
+
+Possible services:
+
+
+
+akshare-worker
+
+akshare-quotes
+
+or one service with different commands.
+
+Examples:
+
+
+
+docker compose --profile akshare run --rm \
+
+akshare-worker fetch futures-1m \
+
+--instrument SHFE.rb2610
+
+and:
+
+
+
+docker compose --profile akshare up -d akshare-quotes
+
+Exact naming may follow existing compose conventions.
+
+69. Development vs Production Behavior
+
+Development MAY use bind-mounted Python source and reload behavior.
+
+Production SHOULD use immutable built images.
+
+AKShare functionality MUST not depend on source bind mounts to work correctly.
+
+70. FastAPI Independence
+
+FastAPI startup MUST NOT fail solely because AKShare is unavailable.
+
+FastAPI historical queries read stored data.
+
+FastAPI realtime queries read live cache.
+
+Therefore:
+
+
+
+AKShare public source unavailable
+
+MUST NOT make:
+
+
+
+FastAPI
+
+CTP
+
+IBKR
+
+QuestDB
+
+PostgreSQL
+
+unavailable.
+
+71. CTP Isolation
+
+Phase 11B MUST NOT change CTP callback behavior.
+
+CTP callback remains:
+
+
+
+capture timestamp
+
+copy fields
+
+normalize
+
+assign identity
+
+non-blocking enqueue
+
+return
+
+AKShare operations MUST never execute on CTP callback threads.
+
+72. IBKR Isolation
+
+AKShare failures or delays MUST not block future IBKR callback handling or subscription management.
+
+Provider failures must remain isolated.
+
+73. Shutdown — Historical Jobs
+
+Graceful shutdown of historical workers SHOULD:
+
+
+
+stop starting new fetch chunks;
+
+allow bounded in-flight request completion;
+
+persist checkpoint state;
+
+record ingestion run status;
+
+close HTTP clients.
+
+74. Shutdown — Realtime Poller
+
+Graceful quote-poller shutdown MUST:
+
+
+
+stop accepting new subscriptions;
+
+stop scheduling new network polls;
+
+cancel or await bounded in-flight requests;
+
+emit already-normalized events where appropriate;
+
+close client;
+
+terminate cleanly.
+
+Shutdown MUST NOT hang indefinitely.
+
+Part D — Testing
+
+75. Unit Tests
+
+CI MUST NOT require external internet access.
+
+All AKShare behavior MUST be testable using fixtures/fakes.
+
+76. 1-Minute Parsing Tests
+
+Fixtures MUST cover:
+
+
+
+normal 1-minute rows;
+
+missing optional columns;
+
+invalid timestamps;
+
+duplicate rows;
+
+unordered rows;
+
+numeric strings;
+
+null values;
+
+invalid OHLC;
+
+schema drift.
+
+77. Trading-Day Tests
+
+Tests MUST include night-session examples.
+
+At minimum verify that:
+
+
+
+local calendar date
+
+is not automatically assumed to equal:
+
+
+
+futures trading day
+
+78. Idempotency Tests
+
+Fetching the same unchanged 1-minute dataset twice MUST not create duplicate canonical bars.
+
+Expected:
+
+
+
+fetch 1 → N writes
+
+fetch 2 → 0 new canonical rows
+
+or equivalent update semantics.
+
+79. Revision Tests
+
+Given:
+
+
+
+fetch 1:
+
+close = 3500
+
+
+
+fetch 2:
+
+same logical bar
+
+close = 3501
+
+the system MUST:
+
+
+
+recognize a revision;
+
+preserve raw fetch lineage;
+
+increment revisions;
+
+expose latest accepted canonical value.
+
+80. Mapping Tests
+
+Known mapping:
+
+
+
+SHFE.rb2610
+
+→ RB2610
+
+must resolve.
+
+Unknown mapping MUST not be guessed.
+
+81. Range-Chunking Tests
+
+If an endpoint requires chunked retrieval:
+
+
+
+requested range
+
+→ chunk A
+
+→ chunk B
+
+→ overlap
+
+→ merge
+
+tests MUST verify:
+
+
+
+correct coverage;
+
+no duplicate canonical rows;
+
+retry-safe resume.
+
+82. Fake AKShare Client
+
+Provide:
+
+
+
+FakeAkshareClient
+
+or equivalent.
+
+It SHOULD support deterministic fixtures for:
+
+
+
+1-minute history;
+
+realtime quotes;
+
+empty responses;
+
+exceptions;
+
+schema changes.
+
+83. Realtime Quality Test
+
+Every normalized AKShare live quote MUST contain:
+
+
+
+provider = AKSHARE
+
+quality = BEST_EFFORT
+
+84. No Trade Synthesis Test
+
+Changing quote snapshots MUST not generate TradeTick.
+
+Example:
+
+
+
+snapshot A price=3500
+
+snapshot B price=3501
+
+Expected emitted event count:
+
+
+
+2 QuoteSnapshot
+
+0 TradeTick
+
+85. Provider-Aware Cache Test
+
+Given:
+
+
+
+CTP SHFE.rb2610
+
+AKSHARE SHFE.rb2610
+
+both must remain retrievable independently.
+
+AKShare update MUST NOT overwrite CTP.
+
+86. API Historical Integration Test
+
+Test path:
+
+
+
+FakeAkshareClient
+
+↓
+
+1m normalizer
+
+↓
+
+historical ingestion
+
+↓
+
+test historical repository / QuestDB fixture
+
+↓
+
+GET /v1/bars/SHFE.rb2610?interval=1m&provider=akshare
+
+Expected:
+
+
+
+HTTP 200
+
+stored 1m bars
+
+No external network.
+
+87. API Realtime Integration Test
+
+Test:
+
+
+
+FakeAkshareClient
+
+↓
+
+quote poller
+
+↓
+
+QuoteSnapshot
+
+↓
+
+shared ingress
+
+↓
+
+ZeroMQ / equivalent test transport
+
+↓
+
+FastAPI cache
+
+↓
+
+GET /v1/quotes/SHFE.rb2610?provider=akshare
+
+Expected:
+
+
+
+provider=AKSHARE
+
+quality=BEST_EFFORT
+
+88. Failure Isolation Test
+
+Simulate AKShare endpoint failure.
+
+Verify:
+
+
+
+CTP pipeline remains functional;
+
+FastAPI remains available;
+
+QuestDB remains available;
+
+PostgreSQL remains available;
+
+AKShare health becomes degraded/unavailable;
+
+historical stored data remains queryable.
+
+89. Manual Smoke Tests
+
+Manual internet-dependent tests MAY exist outside CI.
+
+
+
+Daily historical
+
+docker compose --profile akshare run --rm \
+
+akshare-worker fetch futures-daily \
+
+--instrument SHFE.rb2610
+
+1-minute historical
+
+docker compose --profile akshare run --rm \
+
+akshare-worker fetch futures-1m \
+
+--instrument SHFE.rb2610
+
+Query stored 1-minute bars
+
+curl \
+
+'http://127.0.0.1:8000/v1/bars/SHFE.rb2610?interval=1m&provider=akshare'
+
+One-shot quote
+
+docker compose --profile akshare run --rm \
+
+akshare-worker quote SHFE.rb2610
+
+Part E — Documentation
+
+90. Documentation Updates
+
+Update:
+
+
+
+REQUIREMENTS.md
+
+ROADMAP.md
+
+CHANGELOG.md
+
+
+
+docs/architecture.md
+
+docs/providers.md
+
+docs/providers/akshare.md
+
+docs/data-model.md
+
+docs/delivery-semantics.md
+
+Create or update:
+
+
+
+docs/phases/phase-11b-akshare-intraday-and-realtime.md
+
+91. AKShare Provider Documentation
+
+docs/providers/akshare.md MUST document:
+
+
+
+historical daily capability;
+
+historical 1-minute capability;
+
+reference capability;
+
+best-effort quote capability;
+
+provider vs upstream source;
+
+rate-limit assumptions;
+
+source limitations;
+
+symbol mapping rules;
+
+storage destinations;
+
+raw archive lineage;
+
+realtime quality semantics;
+
+known endpoint lookback limits;
+
+known schema fragility.
+
+92. Data Model Documentation
+
+docs/data-model.md MUST explicitly distinguish:
+
+
+
+HistoricalBar
+
+from:
+
+
+
+QuoteSnapshot
+
+and:
+
+
+
+TradeTick
+
+It MUST document historical bar identity separately from realtime event identity.
+
+93. Delivery Semantics Documentation
+
+docs/delivery-semantics.md MUST state:
+
+Historical:
+
+
+
+logical idempotency based on canonical bar key
+
+Realtime:
+
+
+
+at-least-once transport
+
+stable producer_id + seq
+
+transport duplicate deduplication
+
+feed duplicates preserved
+
+Do not mix the two identity models.
+
+Part F — Non-Goals
+
+94. Explicit Non-Goals
+
+Phase 11B MUST NOT implement:
+
+
+
+AKShare as primary professional realtime feed;
+
+high-frequency sub-second scraping;
+
+guaranteed tick-by-tick semantics;
+
+reconstructed exchange transaction stream;
+
+synthetic trade ticks;
+
+synthetic order-book depth;
+
+exchange sequence reconstruction;
+
+automatic provider failover;
+
+provider price averaging;
+
+provider arbitration;
+
+order routing;
+
+order execution;
+
+trading strategy execution;
+
+Redis solely for AKShare;
+
+Kafka solely for AKShare;
+
+Celery solely for AKShare;
+
+synchronous AKShare calls inside FastAPI;
+
+direct AKShare writes to FastAPI cache;
+
+direct AKShare ZeroMQ publishing from endpoint adapters;
+
+support for every AKShare endpoint.
+
+Part G — Architectural Invariants
+
+95. Mandatory Invariants
+
+After Phase 11B all of the following MUST remain true:
+
+
+
+AKShare 1-minute bars are historical data.
+
+AKShare quote polling is best-effort realtime data.
+
+1-minute bars do not enter the live quote pipeline.
+
+QuoteSnapshot events do not automatically become historical 1-minute bars.
+
+FastAPI never synchronously calls AKShare.
+
+AKShare provider-specific code ends at normalization/event emission.
+
+AKShare endpoint adapters do not directly mutate FastAPI state.
+
+AKShare endpoint adapters do not directly publish ZeroMQ.
+
+Historical ingestion uses the common historical repository/storage service.
+
+Realtime quotes use the common realtime ingress.
+
+Canonical instrument mappings come from provider mappings.
+
+Unknown symbols are never silently guessed.
+
+Provider identity survives storage and live delivery.
+
+AKShare quotes are explicitly marked BEST_EFFORT.
+
+No automatic fallback to AKShare exists.
+
+No TradeTick is synthesized from snapshot differences.
+
+CTP callback behavior remains unchanged.
+
+AKShare failure cannot break CTP.
+
+AKShare failure cannot break IBKR.
+
+Raw historical fetches retain provenance.
+
+Canonical historical writes remain idempotent.
+
+Historical revisions remain detectable.
+
+Realtime transport retries retain stable identity.
+
+FastAPI historical queries read stored data.
+
+FastAPI live queries read the realtime cache.
+
+Part H — Definition of Done
+
+96. Phase 11B Definition of Done
+
+Phase 11B is complete only when all applicable items below are satisfied.
+
+
+
+Provider capabilities
+
+AKShare advertises historical bars.
+
+AKShare advertises intraday bars.
+
+AKShare advertises reference data.
+
+AKShare advertises best-effort quotes.
+
+AKShare does not advertise authoritative realtime quotes.
+
+AKShare does not advertise trade ticks.
+
+AKShare does not advertise market depth unless genuinely supported later.
+
+1-minute historical bars
+
+futures 1-minute endpoint adapter exists.
+
+1-minute data can be fetched for mapped Chinese futures contracts.
+
+canonical instrument → provider symbol mapping is used.
+
+missing mappings fail visibly.
+
+canonical interval is 1m.
+
+timestamps are normalized correctly.
+
+Asia/Shanghai source timestamps are handled correctly.
+
+futures night-session trading day is handled correctly.
+
+OHLC validation exists.
+
+invalid rows are rejected/quarantined.
+
+optional missing fields remain NULL.
+
+canonical rows are written to historical_bars.
+
+repeated unchanged fetches are idempotent.
+
+revisions are detected.
+
+revision counts are reported.
+
+raw fetch archives are preserved in Parquet/ZSTD.
+
+fetch metadata includes lineage.
+
+bounded date-range fetching works where supported.
+
+upstream range limits are handled explicitly.
+
+chunked requests merge correctly.
+
+overlapping requests do not duplicate canonical rows.
+
+resumable backfill exists.
+
+backfill state/checkpointing exists.
+
+recent intraday refresh can be scheduled if enabled.
+
+schema drift fails visibly.
+
+FastAPI historical API
+
+/v1/bars/{symbol}?interval=1m&provider=akshare works.
+
+API reads from canonical stored bars.
+
+API does not contact AKShare synchronously.
+
+start_day filtering works.
+
+end_day filtering works.
+
+API returns canonical provider identity.
+
+Best-effort realtime
+
+dedicated AKShare quote poller exists.
+
+realtime polling defaults to disabled.
+
+polling interval is configurable.
+
+minimum safe polling interval is enforced.
+
+bounded concurrency exists.
+
+batching is used where endpoint supports it.
+
+subscription resolution uses provider_instruments.
+
+realtime normalization produces QuoteSnapshot.
+
+every AKShare quote has provider=AKSHARE.
+
+every AKShare quote has quality=BEST_EFFORT.
+
+recv_ts is always populated.
+
+timestamp provenance is represented.
+
+producer_id exists.
+
+seq is monotonic per producer.
+
+transport retries preserve identity.
+
+feed duplicates are not confused with transport duplicates.
+
+no TradeTick is synthesized.
+
+quotes enter shared realtime ingress.
+
+adapters do not publish ZeroMQ directly.
+
+provider-aware cache supports simultaneous CTP/AKShare values.
+
+/v1/quotes/{symbol}?provider=akshare works.
+
+provider-less requests do not silently fall back to AKShare.
+
+quote staleness is observable.
+
+optional realtime persistence uses shared persistence service.
+
+Reliability
+
+transient network errors retry.
+
+retry is bounded.
+
+retry uses backoff and jitter.
+
+rate-limit handling exists.
+
+empty responses use endpoint-specific semantics.
+
+schema drift is detectable.
+
+AKShare provider health is observable.
+
+AKShare realtime health is observable.
+
+historical ingestion health is observable.
+
+graceful shutdown works.
+
+AKShare failure does not block API startup.
+
+AKShare failure does not affect CTP.
+
+AKShare failure does not affect IBKR.
+
+Observability
+
+1-minute request metrics exist.
+
+1-minute rows-received metrics exist.
+
+1-minute rows-written metrics exist.
+
+revision metrics exist.
+
+mapping-error metrics exist.
+
+schema-error metrics exist.
+
+quote request metrics exist.
+
+quote failure metrics exist.
+
+quote latency metrics exist.
+
+quote emitted-event metrics exist.
+
+last-success metrics exist.
+
+ingestion runs are persisted.
+
+Testing
+
+unit tests do not require internet.
+
+FakeAkshareClient exists.
+
+1-minute fixtures exist.
+
+quote fixtures exist.
+
+schema-drift fixtures exist.
+
+night-session tests exist.
+
+idempotency tests exist.
+
+revision tests exist.
+
+mapping-error tests exist.
+
+range-chunking tests exist.
+
+retry tests exist.
+
+quote quality tests exist.
+
+no-trade-synthesis test exists.
+
+provider-aware cache test exists.
+
+FastAPI historical integration test exists.
+
+FastAPI realtime integration test exists.
+
+failure-isolation test exists.
+
+all previous Phase 0–11A tests continue to pass.
+
+Documentation
+
+REQUIREMENTS.md updated.
+
+ROADMAP.md updated.
+
+CHANGELOG.md updated.
+
+architecture documentation updated.
+
+AKShare provider documentation updated.
+
+data model documentation updated.
+
+delivery semantics documentation updated.
+
+Phase 11B document added.
+
+Part I — Recommended Implementation Order
+
+97. Phase 11B Implementation Sequence
+
+Implement in this order.
+
+
+
+11B.1 Historical 1-Minute Endpoint
+
+Implement:
+
+
+
+AkshareClient
+
+↓
+
+FuturesMinuteBarEndpointAdapter
+
+No realtime polling yet.
+
+Goal:
+
+
+
+fetch one RB2610 1m dataset successfully
+
+11B.2 1-Minute Normalizer
+
+Normalize into:
+
+
+
+HistoricalDataBatch
+
+interval=1m
+
+Implement:
+
+
+
+timestamps;
+
+OHLC;
+
+volume;
+
+OI where available;
+
+provider identity;
+
+symbol mapping;
+
+data-quality validation.
+
+11B.3 Canonical 1-Minute Persistence
+
+Connect to:
+
+
+
+historical_bars
+
+Verify manually:
+
+
+
+SELECT count()
+
+FROM historical_bars
+
+WHERE provider='AKSHARE'
+
+AND exchange='SHFE'
+
+AND instrument_id='rb2610'
+
+AND interval='1m';
+
+11B.4 Raw Archive
+
+Archive each fetch into immutable Parquet/ZSTD with fetch metadata.
+
+11B.5 Idempotency and Revision Detection
+
+Verify:
+
+
+
+same fetch twice
+
+→ no duplicate canonical rows
+
+and:
+
+
+
+same logical bar with changed values
+
+→ revision detected
+
+11B.6 Range Fetching
+
+Implement:
+
+
+
+--start
+
+--end
+
+and endpoint-specific request chunking.
+
+11B.7 Backfill and Resume
+
+Implement resumable:
+
+
+
+backfill futures-1m
+
+with checkpoints.
+
+11B.8 FastAPI 1-Minute Query
+
+Verify:
+
+
+
+curl \
+
+'http://127.0.0.1:8000/v1/bars/SHFE.rb2610?interval=1m&provider=akshare'
+
+Expected:
+
+
+
+HTTP 200
+
+stored canonical 1-minute bars
+
+11B.9 Best-Effort Quote Capability
+
+Add capability metadata:
+
+
+
+best_effort_quotes
+
+BEST_EFFORT
+
+No polling yet.
+
+11B.10 Quote Adapter
+
+Implement endpoint adapter and QuoteSnapshot normalization.
+
+11B.11 Quote Poller
+
+Implement:
+
+
+
+polling;
+
+batching;
+
+bounded concurrency;
+
+timeout;
+
+retry;
+
+backoff;
+
+staleness;
+
+health.
+
+11B.12 Shared Realtime Integration
+
+Connect:
+
+
+
+AKShare QuoteSnapshot
+
+↓
+
+shared ingress
+
+↓
+
+Dispatcher
+
+↓
+
+ZeroMQ
+
+↓
+
+FastAPI cache
+
+11B.13 Provider-Aware API
+
+Verify:
+
+
+
+curl \
+
+'http://127.0.0.1:8000/v1/quotes/SHFE.rb2610?provider=akshare'
+
+while allowing CTP/IBKR observations for the same contract to coexist.
+
+11B.14 Monitoring and Health
+
+Complete metrics, health and structured logs.
+
+11B.15 Tests and Regression
+
+Run:
+
+
+
+AKShare unit tests;
+
+ingestion tests;
+
+FastAPI tests;
+
+provider-aware cache tests;
+
+historical storage tests;
+
+Phase 0–11A regression suite.
+
+11B.16 Documentation
+
+Finalize phase documentation and update architectural documents.
+
+98. Final Architecture After Phase 11B
+
+Market Data Backend
+
+
+
+┌───────────────────────────────────────────────────────┐
+
+│ Providers │
+
+│ │
+
+│ CTP IBKR AKShare │
+
+│ │ │ │ │
+
+│ │ │ ┌────────┴────────┐ │
+
+│ │ │ │ │ │
+
+│ realtime │ historical quotes │
+
+│ │ 1m / daily best-effort │
+
+└────┬─────────────┴────────────┬───────────────┬───────┘
+
+│ │ │
+
+▼ ▼ ▼
+
+Canonical Realtime HistoricalDataBatch QuoteSnapshot
+
+Market Events │ │
+
+│ │ │
+
+│ ▼ │
+
+│ Historical Ingestion │
+
+│ │ │ │
+
+│ ▼ ▼ │
+
+│ QuestDB Parquet │
+
+│ historical raw archive │
+
+│ _bars │
+
+│ │
+
+└──────────────────┬──────────────────────┘
+
+▼
+
+Shared Live Ingress
+
+│
+
+Dispatcher
+
+│
+
+┌────────┴─────────┐
+
+▼ ▼
+
+Persistence ZeroMQ
+
+│
+
+▼
+
+FastAPI
+
+┌──────┴───────┐
+
+▼ ▼
+
+REST Quotes WebSocket
+
+
+
+Historical API:
+
+
+
+FastAPI
+
+↓
+
+Historical Repository
+
+↓
+
+QuestDB / historical_bars
+
+99. Final Design Principles
+
+Phase 11B MUST preserve these conceptual boundaries:
+
+
+
+AKShare 1-minute bars
+
 =
-external Python package
-```
 
-After Phase 11:
+historical intraday data
 
-```text
-AKShare
 =
-controlled, observable, versioned
-Historical / Reference Provider
-```
 
-The backend must be able to answer:
+persisted canonical bars
 
-```text
-Where did this value come from?
+while:
 
-When was it fetched?
 
-Which AKShare endpoint produced it?
 
-Which upstream source did that endpoint represent?
+AKShare quote polling
 
-Which canonical instrument does it belong to?
+=
 
-Was this value revised later?
+best-effort live observation
 
-Can the original source response be reproduced or inspected?
-```
+=
 
-If these questions cannot be answered, the AKShare integration is incomplete.
+QuoteSnapshot
 
----
+and:
 
-# 100. Final Codex Instruction
 
-After completing Phase 11:
 
-1. run the complete test suite
-2. run AKShare provider tests
-3. run PostgreSQL integration tests
-4. run QuestDB historical-data integration tests
-5. run Parquet/DuckDB tests
-6. report supported AKShare datasets
-7. report exact AKShare version used
-8. report every endpoint implemented
-9. report each endpoint's upstream source where known
-10. report database migrations
-11. report raw archive layout
-12. report revision behavior
-13. report unresolved-symbol behavior
-14. report test coverage
-15. report known unstable endpoints
-16. report remaining risks
-17. update documentation
-18. update CHANGELOG
-19. do NOT enable best-effort realtime polling unless explicitly requested
-20. do NOT begin the next phase automatically
+CTP / future authoritative providers
+
+=
+
+professional realtime market feed
+
+These three concepts MUST NOT be conflated.
+
+The backend should be able to answer independently:
+
+
+
+What 1-minute AKShare bars have I stored?
+
+and:
+
+
+
+What is AKShare's latest observed quote?
+
+without either capability depending on the other.
+
+100. Phase Boundary
+
+Phase 11B ends when AKShare has reliable:
+
+
+
+Historical:
+
+daily bars
+
+1-minute bars
+
+backfill
+
+storage
+
+raw lineage
+
+FastAPI queries
+
+
+
+Realtime:
+
+best-effort quote polling
+
+provider-aware live cache
+
+quality labeling
+
+health / metrics
+
+Phase 11B MUST NOT implement cross-provider selection.
+
+The recommended next phase is:
+
+
+
+Phase 12 — Provider Selection, Arbitration and Failover
+
+which may address:
+
+
+
+preferred provider
+
+fallback policy
+
+freshness ranking
+
+provider quality ranking
+
+cross-provider discrepancy detection
+
+manual/automatic provider selection
+
+Those concerns remain explicitly outside Phase 11B.
+
+## Phase 12 — Provider Selection, Arbitration and Failover
+
+Implementation status: complete (2026-09-05).
+
+Phase 12 introduces a provider-neutral read-side selection layer over the provider-aware latest quote cache. It implements explicit, preferred-provider, and quality-ranked modes; per-provider freshness; separately enabled fallback and stale use; transparent decision metadata; discrepancy diagnostics; and bounded-label metrics.
+
+The default is `explicit`, so multiple providers still require `provider=`. Failover is disabled unless `PROVIDER_FALLBACK_ENABLED=true`. Selection must not mutate cached observations, average prices, synthesize events, change persistence identity, call provider SDKs, or run on native callback threads. Explicit provider queries always return that provider's observation, including its stale status. `/v1/provider-selection/{symbol}` exposes the inputs and decision for operators.
+
+Phase 12 is complete when policy decisions are deterministic and tested, stale/unavailable primaries fail over only under explicit configuration, AKShare quality remains lower than authoritative realtime feeds, discrepancies are observable without automatic price merging, and all earlier regression suites pass.
