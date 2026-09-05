@@ -47,3 +47,5 @@ logging:
   level: info
 live:
   pub_endpoint: tcp://127.0.0.1:5556
+  # Per-peer pending messages; zero (unbounded) is not allowed.
+  sndhwm: 1000

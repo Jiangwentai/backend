@@ -42,6 +42,7 @@ services:
       context: .
       dockerfile: docker/api.Dockerfile
     environment:
+      ZMQ_RCVHWM: ${ZMQ_RCVHWM:-1000}
       ZMQ_SUB_ENDPOINT: ${ZMQ_SUB_ENDPOINT:-tcp://host.docker.internal:5556}
       AKSHARE_ZMQ_SUB_ENDPOINT: ${AKSHARE_ZMQ_SUB_ENDPOINT:-}
       AKSHARE_QUOTE_STALE_AFTER_SECONDS: ${AKSHARE_QUOTE_STALE_AFTER_SECONDS:-15}

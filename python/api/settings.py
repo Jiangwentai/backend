@@ -20,6 +20,12 @@ class Settings:
     provider_allow_stale: bool = False
     provider_discrepancy_bps: float = 20.0
 
+    zmq_rcvhwm: int = 1000
+
+    def __post_init__(self) -> None:
+        if type(self.zmq_rcvhwm) is not int or not 1 <= self.zmq_rcvhwm <= 2_147_483_647:
+            raise ValueError("ZMQ_RCVHWM must be an integer in 1..2147483647")
+
     @property
     def zmq_endpoints(self) -> list[str]:
         return [value for value in (self.zmq_endpoint,self.akshare_zmq_endpoint) if value]
@@ -27,6 +33,7 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         value=cls(
+            zmq_rcvhwm=int(os.getenv("ZMQ_RCVHWM","1000")),
             zmq_endpoint=os.getenv("ZMQ_SUB_ENDPOINT",os.getenv("ZMQ_PUB_ENDPOINT","tcp://127.0.0.1:5556")),
             questdb_http_url=os.getenv("QDB_HTTP_URL","http://127.0.0.1:9000"),
             websocket_queue_capacity=int(os.getenv("WEBSOCKET_QUEUE_CAPACITY","128")),

@@ -27,7 +27,7 @@ def create_app(*,settings:Settings|None=None,repository:Any|None=None,metadata_r
         cache=LatestQuoteCache({"akshare":config.akshare_quote_stale_after_seconds});manager=WebSocketManager(config.websocket_queue_capacity)
         repo=repository or QuestDBQuoteRepository(config.questdb_http_url,config.recovery_timeout_seconds)
         metadata=metadata_repository or PostgresMetadataRepository(config.postgres_dsn,config.postgres_timeout_seconds)
-        subscriber=LiveSubscriber(config.zmq_endpoints,cache,manager.publish)
+        subscriber=LiveSubscriber(config.zmq_endpoints,cache,manager.publish,rcvhwm=config.zmq_rcvhwm)
         selector=ProviderSelector(SelectionPolicy(mode=config.provider_selection_mode,
           preferred_providers=config.provider_preference,fallback_enabled=config.provider_fallback_enabled,
           allow_stale=config.provider_allow_stale,discrepancy_bps=config.provider_discrepancy_bps,

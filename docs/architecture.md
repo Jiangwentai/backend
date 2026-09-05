@@ -47,3 +47,7 @@ An optional separate AKShare quote poller normalizes public snapshots to `QuoteS
 Phase 12 places provider selection after the provider-aware live cache. The cache remains the source-of-truth collection of independent observations. Explicit queries retrieve an exact provider; provider-omitted queries may apply an operator-configured preferred or quality-ranked policy. Freshness and fallback decisions are read-side metadata only and never modify, merge, average, or republish provider events.
 
 V1 must run exactly one Uvicorn worker because cache, subscriptions, and metrics are process-local. Multi-worker synchronization is intentionally deferred; no Redis or broker is introduced.
+
+## Live transport buffer configuration
+
+C++ PUB sets `SNDHWM` before bind from `live.sndhwm`, overridden by `ZMQ_SNDHWM`. FastAPI SUB sets `RCVHWM` before all endpoint connections from `ZMQ_RCVHWM`. Defaults remain 1000 messages per peer; both require 1..2147483647, excluding unbounded zero. PUB HWM loss can accompany a successful send and is not measurable by send failure counters. See [delivery semantics](delivery-semantics.md) for buffering and validation limits.

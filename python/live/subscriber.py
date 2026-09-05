@@ -11,13 +11,16 @@ from .protocol import decode_tick, expected_topic
 TickCallback = Callable[[dict], Awaitable[None] | None]
 
 class LiveSubscriber:
-    def __init__(self,endpoint:str|list[str]|tuple[str,...],cache:LatestQuoteCache,on_tick:TickCallback|None=None):
+    def __init__(self,endpoint:str|list[str]|tuple[str,...],cache:LatestQuoteCache,on_tick:TickCallback|None=None,*,rcvhwm:int=1000):
+        if type(rcvhwm) is not int or not 1 <= rcvhwm <= 2_147_483_647:
+            raise ValueError("ZMQ_RCVHWM must be an integer in 1..2147483647")
+        self.rcvhwm=rcvhwm
         self.endpoints=[endpoint] if isinstance(endpoint,str) else list(endpoint);self.endpoint=self.endpoints[0];self.cache=cache;self.on_tick=on_tick
         self.received_total=0;self.cache_updates_total=0;self.decode_failures_total=0;self.last_message_monotonic:float|None=None
         self.provider_received_total=defaultdict(int)
         self._stop=asyncio.Event();self.ready=asyncio.Event();self.healthy=False
     async def run(self):
-        context=zmq.asyncio.Context();socket=context.socket(zmq.SUB);socket.setsockopt(zmq.SUBSCRIBE,b"")
+        context=zmq.asyncio.Context();socket=context.socket(zmq.SUB);socket.setsockopt(zmq.RCVHWM,self.rcvhwm);socket.setsockopt(zmq.SUBSCRIBE,b"")
         for endpoint in self.endpoints:socket.connect(endpoint)
         self.healthy=True;self.ready.set()
         try:

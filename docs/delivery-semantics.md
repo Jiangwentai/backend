@@ -6,6 +6,12 @@ ZeroMQ and WebSocket delivery are best effort. ZeroMQ does not replay during API
 
 The C++ publisher submits topic and MessagePack body through cppzmq's multipart helper with non-blocking flags. A send exception ends the current publisher socket lifecycle; the implementation never starts a new logical message after an uncertain partial multipart operation. Standard PUB high-water-mark loss is still intentionally lossy and cannot be inferred reliably from a successful send return value.
 
+The C++ PUB explicitly sets `SNDHWM` before bind, using `live.sndhwm` or the overriding `ZMQ_SNDHWM` environment variable. FastAPI sets `RCVHWM` before connecting any subscriber endpoint, using `ZMQ_RCVHWM`. Both default to 1000 and reject zero, negative, or out-of-range values (valid range 1..2147483647). These limits count pending messages per peer, not bytes, total lifetime sends, or topic/body frames independently. TCP and receiver buffering mean the sender's HWM is not an exact end-to-end backlog or drop threshold.
+
+A slow subscriber can lose whole multipart messages while standard PUB sends return success. This does not require `dontwait` and does not reliably produce a would-block warning. `messages_sent_total` counts successful local socket submissions, and `send_failures_total` counts reported failures; neither measures HWM drops or subscriber delivery. Increasing HWM does not guarantee delivery and may delay fresh quotes behind older observations. The separate persistence path is unchanged. No `CONFLATE` option is used because this protocol requires multipart topic/body messages.
+
+The `ZmqHwm.SlowSubscriberDropsWholeMessagesDespiteSuccessfulSendsAndRecovers` regression uses small in-process queues against the pinned C++ libzmq to verify successful sends with receiver loss, intact multipart boundaries, and delivery resumption after draining. It does not establish a production TCP capacity or GC-pause budget; those require representative deployment measurements.
+
 WebSocket clients receive nothing until they subscribe with protocol version 1:
 
 ```json

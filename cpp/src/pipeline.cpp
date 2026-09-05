@@ -3,7 +3,7 @@
 #include <stdexcept>
 #include <utility>
 namespace market_data {
-Pipeline::Pipeline(AppConfig c):config_(std::move(c)),persistence_(config_.persistence_capacity),live_(config_.live_capacity),dispatcher_(persistence_,&live_),writer_(persistence_,config_.qdb_connection_string(identity_.id().view()),config_.max_batch_rows,std::chrono::milliseconds(config_.max_batch_latency_ms),std::chrono::milliseconds(config_.ack_timeout_ms)),publisher_(live_,config_.zmq_pub_endpoint){
+Pipeline::Pipeline(AppConfig c):config_(std::move(c)),persistence_(config_.persistence_capacity),live_(config_.live_capacity),dispatcher_(persistence_,&live_),writer_(persistence_,config_.qdb_connection_string(identity_.id().view()),config_.max_batch_rows,std::chrono::milliseconds(config_.max_batch_latency_ms),std::chrono::milliseconds(config_.ack_timeout_ms)),publisher_(live_,config_.zmq_pub_endpoint,config_.zmq_sndhwm){
  const bool synthetic=config_.providers_explicit?config_.synthetic_enabled:config_.source=="synthetic";const bool ctp=config_.providers_explicit?config_.ctp_enabled:config_.source=="ctp";
  auto add_boundary=[this](){provider_identities_.push_back(std::make_unique<ProducerIdentity>());ingresses_.push_back(std::make_unique<SpscQueue<MarketTick>>(config_.ingress_capacity));dispatcher_.add_ingress(*ingresses_.back());};
  if(synthetic){add_boundary();auto provider=std::make_unique<SyntheticGenerator>(*ingresses_.back(),*provider_identities_.back(),config_.synthetic_rate,config_.synthetic_symbols);generator_=provider.get();providers_.add(std::move(provider));}

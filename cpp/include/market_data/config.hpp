@@ -22,6 +22,7 @@ struct AppConfig {
   std::uint16_t qdb_port{9000};
   std::string qdb_sf_dir{"./data/qwp-spool"};
   std::string log_level{"info"};
+  int zmq_sndhwm{1000};
   std::string zmq_pub_endpoint{"tcp://127.0.0.1:5556"};
   std::string ctp_front_address;
   std::string ctp_broker_id;

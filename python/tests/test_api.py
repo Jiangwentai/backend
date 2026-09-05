@@ -99,3 +99,21 @@ def test_configured_provider_failover_and_diagnostic_are_transparent(tick):
         assert value["provider"]=="AKSHARE" and value["fallback"] and value["selection_reason"]=="FAILOVER"
         diagnostic=client.get("/v1/provider-selection/SHFE.zn2610").json()
         assert diagnostic["selected_provider"]=="AKSHARE" and len(diagnostic["observations"])==2
+
+
+def test_receive_hwm_env_reaches_api_subscriber(monkeypatch):
+    monkeypatch.setenv("ZMQ_RCVHWM", "4096")
+    settings = Settings.from_env()
+    app = app_for([], settings=settings)
+    with TestClient(app):
+        assert app.state.subscriber.rcvhwm == 4096
+
+
+def test_receive_hwm_defaults_and_invalid_env(monkeypatch):
+    import pytest
+    monkeypatch.delenv("ZMQ_RCVHWM", raising=False)
+    assert Settings.from_env().zmq_rcvhwm == 1000
+    for value in ("0", "-1", "2147483648", "bad", "1.5"):
+        monkeypatch.setenv("ZMQ_RCVHWM", value)
+        with pytest.raises(ValueError):
+            Settings.from_env()

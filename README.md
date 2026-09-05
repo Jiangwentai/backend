@@ -127,6 +127,8 @@ PROVIDER_DISCREPANCY_BPS=20
 
 Selected quotes expose the policy reason and any fallback. Inspect all observations without altering them using `/v1/provider-selection/SHFE.rb2610`.
 
+Live transport buffers default to 1000 pending messages per peer. Configure the C++ publisher with `live.sndhwm` in `config/app.yaml` or overriding `ZMQ_SNDHWM`; configure the FastAPI subscriber with `ZMQ_RCVHWM` (also forwarded by Compose). Both accept integers from 1 to 2147483647; zero/unbounded queues are rejected. Increasing buffers trades memory and quote freshness for burst tolerance; tune with representative slow-consumer measurements. Standard PUB may drop at HWM while send calls still succeed, so send counters and would-block logs cannot measure subscriber delivery or HWM loss. See [delivery semantics](docs/delivery-semantics.md).
+
 Configuration defaults live in `config/app.yaml`; environment variables override deployment-sensitive fields. Never commit `.env`.
 
 ## Phase 3/5 API

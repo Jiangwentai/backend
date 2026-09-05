@@ -48,6 +48,7 @@ AKShare quote poller -> QuoteSnapshot(BEST_EFFORT) -> shared live ingress
 - FastAPI recovery subscribes to ZeroMQ before querying QuestDB; both live and recovery ticks pass through the same cache conflict resolver.
 - FastAPI V1 runs exactly one worker because cache, connection registry, and metrics are process-local.
 - Phase 12 adds a read-side `ProviderSelector` after the provider-aware cache. Explicit provider reads bypass arbitration; provider-omitted reads use the configured policy. Selection never overwrites source observations or changes persistence and fallback defaults off.
+- Live transport HWM values are bounded and configurable: C++ `live.sndhwm` / `ZMQ_SNDHWM`, FastAPI `ZMQ_RCVHWM`, both defaulting to 1000 pending messages per peer and applied before bind/connect. Buffer tuning trades burst tolerance against memory and quote age; it does not provide subscriber delivery guarantees.
 - C++ ZeroMQ publication uses pinned cppzmq `send_multipart(..., dontwait)` for the topic/body pair. A send exception terminates that publisher socket lifecycle; it never continues with potentially uncertain multipart state. Normal PUB/HWM loss remains best effort and is not observable as a failed send.
 
 ## Module responsibilities

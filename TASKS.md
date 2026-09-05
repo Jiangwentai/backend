@@ -4,7 +4,7 @@ Last updated: 2026-09-05
 
 ## Current task
 
-No implementation phase is active. Phase 12 and the ZeroMQ multipart hardening are complete. The next session should inspect `ROADMAP.md` and wait for an explicitly requested next phase; do not infer or pre-implement Phase 13.
+No implementation phase is active. Phase 12, ZeroMQ multipart hardening, and bounded live HWM configuration are complete. The next session should inspect `ROADMAP.md` and wait for an explicitly requested next phase; do not infer or pre-implement Phase 13.
 
 Immediate remaining work is operator validation and maintenance:
 
@@ -30,12 +30,14 @@ Immediate remaining work is operator validation and maintenance:
 - Phase 12: read-side provider selection with safe `explicit` default, `preferred`/`ranked` modes, freshness, opt-in fallback/stale use, transparent decisions, discrepancy diagnostics, metrics, and tests.
 - ZeroMQ multipart hardening: C++ topic/body publication uses pinned cppzmq `send_multipart(..., dontwait)`; a send exception ends that socket lifecycle instead of continuing with uncertain multipart state.
 
+- Live HWM maintenance: configurable C++ `ZMQ_SNDHWM` / YAML `live.sndhwm` and FastAPI `ZMQ_RCVHWM`, default 1000, strict bounded validation, Compose wiring, and slow-subscriber multipart/loss/recovery regression.
+
 ## Latest verification
 
-- Python after Phase 12: `65 passed, 6 skipped`; skips are environment-gated integration tests. Two upstream Starlette/httpx deprecation warnings remain.
-- Default C++/cross-language suite after multipart hardening: `37/37 passed`.
-- `docker compose --profile akshare config -q` passed after Phase 11B/12.
-- `git diff --check` passed after multipart hardening.
+- Python 3.12 after HWM maintenance: `73 passed, 6 skipped`; skips are environment-gated integration tests. The C++ build container with `LIVE_FIXTURE` additionally ran `75 passed, 4 skipped` on Python 3.11. Two upstream Starlette/httpx deprecation warnings remain.
+- Default C++/cross-language suite after HWM maintenance: `41/41` CTest entries passed. The QuestDB test body skipped without `QDB_TEST_CONF`; this is not fresh database integration evidence. Focused HWM/config tests passed `7/7`, and Python live/API tests passed `25/25`.
+- `docker compose --profile akshare config -q` passed after HWM maintenance.
+- `git diff --check` passed after HWM maintenance.
 - Live CTP operator output confirmed connect, login, subscription, and `READY`; this did not prove market-hours tick persistence and API/WebSocket delivery.
 
 ## Remaining work, known bugs, and limitations
@@ -54,7 +56,7 @@ Immediate remaining work is operator validation and maintenance:
 - QuestDB table `ctp_market_data` is provider-specific naming debt, although schema and DEDUP identity are provider-aware. Do not perform a cosmetic migration without explicit scope.
 - QuestDB retention deletion remains operator-only after complete archive verification.
 - External integration tests require their DSNs/fixtures. FastAPI tests emit non-failing Starlette/httpx deprecation warnings.
-- `repomix-output.xml` is currently modified user/generated work unrelated to the publisher change; preserve it unless explicitly asked to regenerate or remove it.
+- Session-start Git status contained a user deletion of `TASK.MD` and an untracked `oneTASK.MD` review note; both are preserved. `repomix-output.xml` had no local modification.
 
 ## Important files
 

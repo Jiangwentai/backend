@@ -18,3 +18,25 @@ async def test_cache_keeps_providers_independent():
  c=LatestQuoteCache();ctp=tick();ctp["provider"]="ctp";synthetic=tick();synthetic["provider"]="synthetic"
  assert await c.update(ctp) and await c.update(synthetic);assert await c.lookup("SHFE","zn2610") is None
  assert (await c.lookup("SHFE","zn2610","ctp"))["provider"]=="ctp"
+
+@pytest.mark.parametrize("value", [0, -1, 2**31, 1.5, True])
+def test_subscriber_rejects_invalid_hwm(value):
+ from live.subscriber import LiveSubscriber
+ with pytest.raises(ValueError, match="ZMQ_RCVHWM"):
+  LiveSubscriber("inproc://invalid", LatestQuoteCache(), rcvhwm=value)
+
+@pytest.mark.asyncio
+async def test_subscriber_sets_hwm_before_each_connection(monkeypatch):
+ import zmq
+ import zmq.asyncio
+ from live.subscriber import LiveSubscriber
+ original_connect = zmq.asyncio.Socket.connect
+ observed = []
+ def connect(socket, endpoint):
+  observed.append((endpoint, socket.getsockopt(zmq.RCVHWM)))
+  return original_connect(socket, endpoint)
+ monkeypatch.setattr(zmq.asyncio.Socket, "connect", connect)
+ subscriber = LiveSubscriber(["inproc://first", "inproc://second"], LatestQuoteCache(), rcvhwm=17)
+ subscriber.stop()
+ await subscriber.run()
+ assert observed == [("inproc://first", 17), ("inproc://second", 17)]

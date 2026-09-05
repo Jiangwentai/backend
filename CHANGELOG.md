@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-05 — Live transport HWM configuration
+
+- Made C++ PUB `SNDHWM` configurable through `live.sndhwm` / `ZMQ_SNDHWM`, and FastAPI SUB `RCVHWM` through `ZMQ_RCVHWM`, including Compose wiring. Both retain the default 1000 and require bounded positive 32-bit integer values before bind/connect.
+- Added configuration validation and a pinned-libzmq slow-subscriber regression for silent PUB loss, intact multipart messages, and recovery after draining.
+- Clarified that successful sends and would-block warnings cannot measure PUB HWM loss; increasing queues trades memory and freshness for burst tolerance without changing persistence semantics.
+
 ## 2026-09-05 — ZeroMQ multipart hardening
 
 - Replaced manually paired topic/body sends with cppzmq's `send_multipart` helper while retaining non-blocking Live Path semantics.

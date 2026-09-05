@@ -65,6 +65,7 @@ if(MD_BUILD_TESTS)
     cpp/tests/unit/test_live_protocol.cpp
     cpp/tests/unit/test_batch_policy.cpp
     cpp/tests/unit/test_config.cpp
+    cpp/tests/unit/test_zmq_hwm.cpp
     cpp/tests/unit/test_ctp_normalizer.cpp
     cpp/tests/unit/test_ctp_state_machine.cpp
     cpp/tests/unit/test_ctp_simulated_pipeline.cpp)
